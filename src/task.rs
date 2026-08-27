@@ -60,9 +60,10 @@ impl Task {
     /// on something that does not exist.
     pub fn implemented(self) -> bool {
         match self {
+            Task::Bolden => true,
             // The pieces are in place: tokenizer, weights, forward
             // pass. Wiring them into an operation comes next.
-            Task::Bolden | Task::Complete | Task::Generate => false,
+            Task::Complete | Task::Generate => false,
             // No trained model for these yet, and no data pipeline.
             Task::Spacing | Task::Kerning => false,
             // Field models are declared in the format only.
@@ -73,7 +74,7 @@ impl Task {
     /// What the task needs as input, for a caller assembling a call.
     pub fn inputs(self) -> &'static [&'static str] {
         match self {
-            Task::Bolden => &["source", "glyph", "from-master", "to-master"],
+            Task::Bolden => &["source", "glyph"],
             Task::Complete => &["source", "glyph", "prefix"],
             Task::Generate => &["glyph"],
             Task::Spacing => &["source", "glyph"],
@@ -120,6 +121,14 @@ mod tests {
     fn an_unknown_task_lists_the_known_ones() {
         let err = "hint".parse::<Task>().unwrap_err();
         assert!(err.contains("kerning"), "{err}");
+    }
+
+    #[test]
+    fn what_is_reported_as_built_really_is() {
+        // The point of reporting capability is that a caller can trust
+        // it. A task marked implemented with no runner behind it is
+        // worse than one honestly marked missing.
+        assert!(Task::Bolden.implemented());
     }
 
     #[test]

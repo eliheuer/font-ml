@@ -128,6 +128,17 @@ Predictions are greedy, so the same input gives the same answer twice.
 A designer reviewing a proposal should not have to wonder whether
 rerunning it would have been better.
 
+From the command line:
+
+```sh
+font-ml run bolden --model runs/v09-pre \
+    --source VirtuaGrotesk-Regular.ufo --glyph eight
+eight: 15/53 points moved, advance +4
+```
+
+Add `--json` for the offsets themselves, one per point in the order
+the reader yields them.
+
 ## Speed
 
 Build with `--release` and, on macOS, `--features accelerate`. One

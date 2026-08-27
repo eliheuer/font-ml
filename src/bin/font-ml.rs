@@ -58,13 +58,19 @@ enum Command {
     },
     /// List every task this tool knows about, and whether it works.
     Tasks,
-    /// Run a task. Not implemented yet; reports what it would need.
+    /// Run a task.
     Run {
         /// Task name, as listed by `tasks`.
         task: String,
         /// The model directory.
         #[arg(long)]
         model: PathBuf,
+        /// The UFO to read the glyph from.
+        #[arg(long)]
+        source: Option<PathBuf>,
+        /// Which glyph to run on.
+        #[arg(long)]
+        glyph: Option<String>,
     },
 }
 
@@ -77,7 +83,9 @@ fn main() -> ExitCode {
             tasks(cli.json);
             exit::OK
         }
-        Command::Run { task, model } => run(&task, &model, cli.json),
+        Command::Run { task, model, source, glyph } => {
+            run(&task, &model, source.as_deref(), glyph.as_deref(), cli.json)
+        }
     };
     ExitCode::from(code)
 }
@@ -190,14 +198,21 @@ fn tasks(json: bool) {
     }
 }
 
-fn run(task: &str, model: &PathBuf, json: bool) -> u8 {
+fn run(
+    task: &str,
+    model: &PathBuf,
+    source: Option<&std::path::Path>,
+    glyph: Option<&str>,
+    json: bool,
+) -> u8 {
     let task: Task = match task.parse() {
         Ok(t) => t,
         Err(e) => return fail(json, exit::USAGE, &e),
     };
-    if let Err(e) = Checkpoint::open(model) {
-        return fail(json, exit::USAGE, &e.to_string());
-    }
+    let checkpoint = match Checkpoint::open(model) {
+        Ok(c) => c,
+        Err(e) => return fail(json, exit::USAGE, &e.to_string()),
+    };
     if !task.implemented() {
         return fail(
             json,
@@ -208,7 +223,81 @@ fn run(task: &str, model: &PathBuf, json: bool) -> u8 {
             ),
         );
     }
-    fail(json, exit::FAILED, "unreachable: a ready task with no runner")
+    match task {
+        Task::Bolden => bolden(&checkpoint, source, glyph, json),
+        _ => fail(json, exit::FAILED, "a ready task with no runner"),
+    }
+}
+
+fn bolden(
+    checkpoint: &Checkpoint,
+    source: Option<&std::path::Path>,
+    glyph: Option<&str>,
+    json: bool,
+) -> u8 {
+    let (Some(source), Some(name)) = (source, glyph) else {
+        return fail(json, exit::USAGE, "bolden needs --source and --glyph");
+    };
+    let font = match norad::Font::load(source) {
+        Ok(f) => f,
+        Err(e) => return fail(json, exit::USAGE, &format!("{source:?}: {e}")),
+    };
+    let Ok(key) = norad::Name::new(name) else {
+        return fail(json, exit::USAGE, &format!("{name} is not a glyph name"));
+    };
+    let Some(g) = font.default_layer().get_glyph(&key) else {
+        return fail(json, exit::USAGE, &format!("no glyph {name} in {source:?}"));
+    };
+    let Some(ops) = font_ml::ufo::glyph_ops(g) else {
+        return fail(
+            json,
+            exit::USAGE,
+            &format!("{name} has no outline to bolden; it may be a composite"),
+        );
+    };
+
+    let model = match font_ml::outline::OutlineModel::load(checkpoint) {
+        Ok(m) => m,
+        Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+    };
+    let center = checkpoint
+        .config
+        .delta_center
+        .map(|c| (c[0], c[1]))
+        .unwrap_or((0, 0));
+    let unicode = g.codepoints.iter().next().map(|c| c as u32);
+    let result = match font_ml::bolden::bolden(
+        &model, name, unicode, g.width, &ops, center,
+    ) {
+        Ok(r) => r,
+        Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+    };
+
+    let moved = result
+        .deltas
+        .iter()
+        .filter(|(x, y)| *x != 0 || *y != 0)
+        .count();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "glyph": name,
+                "points": result.deltas.len(),
+                "moved": moved,
+                "advance_delta": result.advance_delta,
+                "compatible": result.is_compatible(),
+                "deltas": result.deltas,
+            })
+        );
+    } else {
+        println!(
+            "{name}: {moved}/{} points moved, advance {:+}",
+            result.deltas.len(),
+            result.advance_delta
+        );
+    }
+    exit::OK
 }
 
 /// One shape of error output, so a caller parses one thing.
