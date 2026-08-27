@@ -141,6 +141,16 @@ impl Vocab {
             .then(|| COORD_MIN + ((id - self.coord_base) as i32) * GRID)
     }
 
+    /// First id in the delta block, for constrained sampling.
+    pub fn delta_base(&self) -> usize {
+        self.delta_base
+    }
+
+    /// How many delta tokens there are.
+    pub fn delta_count(&self) -> usize {
+        N_DELTAS
+    }
+
     /// Id of a delta, snapped and clamped.
     pub fn delta(&self, v: f64) -> usize {
         let q =

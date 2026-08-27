@@ -57,3 +57,69 @@ fn a_real_checkpoint_loads_and_runs() {
         v.token(next as usize)
     );
 }
+
+/// Bolden a real glyph from a real font with a real checkpoint.
+///
+/// Needs both FONT_ML_TEST_MODEL and FONT_ML_TEST_UFO.
+#[test]
+fn boldening_a_real_glyph_keeps_it_compatible() {
+    let (Some(dir), Some(ufo)) = (model_dir(), ufo_dir()) else {
+        eprintln!("skipped: set FONT_ML_TEST_MODEL and FONT_ML_TEST_UFO");
+        return;
+    };
+    let ckpt = Checkpoint::open(&dir).expect("open model");
+    let model = OutlineModel::load(&ckpt).expect("load weights");
+
+    let font = norad::Font::load(&ufo).expect("load ufo");
+    let name = norad::Name::new("H").unwrap();
+    let glyph = font.default_layer().get_glyph(&name).expect("glyph H");
+
+    let ops = font_ml::ufo::glyph_ops(glyph).expect("H is a drawn glyph");
+    assert!(!ops.is_empty());
+
+    let center = ckpt
+        .config
+        .delta_center
+        .map(|c| (c[0], c[1]))
+        .unwrap_or((0, 0));
+    let result = font_ml::bolden::bolden(
+        &model,
+        "H",
+        Some(0x48),
+        glyph.width,
+        &ops,
+        center,
+    )
+    .expect("bolden");
+
+    assert!(
+        result.is_compatible(),
+        "the predicted master is not point-compatible with the source"
+    );
+    assert_eq!(result.deltas.len(), count_points(&ops));
+
+    let moved = result.deltas.iter().filter(|(x, y)| *x != 0 || *y != 0).count();
+    eprintln!(
+        "H: {} points, {} moved, advance {:+}",
+        result.deltas.len(),
+        moved,
+        result.advance_delta
+    );
+    let dx: Vec<i32> = result.deltas.iter().map(|d| d.0).collect();
+    eprintln!("x offsets: {dx:?}");
+    assert!(moved > 0, "every point stayed put; the model did nothing");
+}
+
+fn ufo_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("FONT_ML_TEST_UFO").map(Into::into)
+}
+
+fn count_points(ops: &[font_ml::tokenizer::Op]) -> usize {
+    ops.iter()
+        .map(|op| match op {
+            font_ml::tokenizer::Op::CurveTo(_) => 3,
+            font_ml::tokenizer::Op::ClosePath => 0,
+            _ => 1,
+        })
+        .sum()
+}

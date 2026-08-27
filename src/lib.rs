@@ -35,11 +35,13 @@
 //! and, for outline models, `vocab.txt`. Nothing is downloaded and
 //! nothing phones home: you point at a folder and it loads.
 
+pub mod bolden;
 pub mod checkpoint;
 pub mod error;
 pub mod outline;
 pub mod task;
 pub mod tokenizer;
+pub mod ufo;
 
 pub use checkpoint::{Checkpoint, ModelConfig, ModelKind};
 pub use error::{Error, Result};

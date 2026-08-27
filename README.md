@@ -94,9 +94,45 @@ Early. What works today:
 - loading and running an outline model through
   [candle](https://github.com/huggingface/candle)
 - `models`, `describe` and `tasks` on the command line
+- reading drawn outlines out of UFO glyphs
+- **bolden**: predicting a heavier master from a lighter one
 
-Not yet: any of the tasks, reading UFO sources, and field models, which
-are declared in the format so it does not have to change later.
+Not yet: the other five tasks, and field models, which are declared in
+the format so it does not have to change later.
+
+## Boldening
+
+The method is structure-forced weight transfer. Every drawing command
+and every source coordinate is forced from the input glyph; the model
+only fills the offset slots between them, and its choice is restricted
+to the delta block of the vocabulary.
+
+So the result is point-compatible with the input *by construction* —
+same contours, same points, same order — because there is no token
+position at which the model could add, remove or reorder one. That is
+the rule interpolation needs, and here it is a property of the
+encoding rather than a check performed afterwards.
+
+Running Virtua-12M on the H of Virtua Grotesk:
+
+```
+H: 25 points, 25 moved, advance +16
+x offsets: [-32, -32, 40, 40, 40, 40, 20, 20, ... 40, 40, -32, -32, -32]
+```
+
+The outer edges of the stems move out, the inner edges move in, and
+the advance grows: the stems thicken and the counter narrows, which is
+what boldening an H is.
+
+Predictions are greedy, so the same input gives the same answer twice.
+A designer reviewing a proposal should not have to wonder whether
+rerunning it would have been better.
+
+## Speed
+
+Build with `--release` and, on macOS, `--features accelerate`. One
+glyph goes from 25 seconds to 0.7 with both, which is the difference
+between a batch job and something an editor can offer while you draw.
 
 ## Rust version
 
