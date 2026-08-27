@@ -8,6 +8,13 @@ use crate::tokenizer::Op;
 
 /// The drawing commands of a glyph, or `None` if it has nothing to
 /// draw or is built from components.
+///
+/// A closed contour ends by returning to its start, so the start point
+/// is visited twice: once as the move and once as the end of the
+/// closing segment. The command run therefore carries one point more
+/// per contour than the contour stores, and anything mapping
+/// per-point results back onto the source has to drop that duplicate
+/// or every contour after the first is shifted by one point.
 pub fn glyph_ops(glyph: &norad::Glyph) -> Option<Vec<Op>> {
     if !glyph.components.is_empty() || glyph.contours.is_empty() {
         return None;

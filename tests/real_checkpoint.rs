@@ -123,3 +123,37 @@ fn count_points(ops: &[font_ml::tokenizer::Op]) -> usize {
         })
         .sum()
 }
+
+/// A closed contour's start point is visited twice: once as the move,
+/// once as the end of the implied closing segment. So the reader
+/// yields one point more per contour than the contour stores, and a
+/// caller applying offsets has to account for the duplicate or every
+/// contour after the first is shifted by one point.
+#[test]
+fn ops_have_exactly_one_point_per_contour_point() {
+    let Some(ufo) = ufo_dir() else {
+        eprintln!("skipped: set FONT_ML_TEST_UFO");
+        return;
+    };
+    let font = norad::Font::load(&ufo).expect("load ufo");
+    let mut checked = 0;
+    for name in ["H", "O", "period", "eight", "a", "n"] {
+        let Ok(n) = norad::Name::new(name) else { continue };
+        let Some(glyph) = font.default_layer().get_glyph(&n) else { continue };
+        let Some(ops) = font_ml::ufo::glyph_ops(glyph) else { continue };
+        let in_contours: usize =
+            glyph.contours.iter().map(|c| c.points.len()).sum();
+        let in_ops = count_points(&ops);
+        let closed = glyph.contours.len();
+        eprintln!(
+            "{name}: ops {in_ops}, contours {in_contours} in {closed} contour(s)"
+        );
+        assert_eq!(
+            in_ops,
+            in_contours + closed,
+            "{name}: expected one duplicated start point per contour"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no glyphs were checked");
+}

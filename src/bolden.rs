@@ -32,7 +32,11 @@ pub struct Bolden {
     pub to: Vec<Op>,
     /// Predicted change in advance width.
     pub advance_delta: i32,
-    /// Per-point offsets, in the order the points appear.
+    /// Per-point offsets, in the order the points appear in `from`.
+    ///
+    /// One entry per point *as the reader yields them*, which is one
+    /// more per closed contour than the source stores, because a
+    /// contour ends by returning to its start. See [`crate::ufo`].
     pub deltas: Vec<(i32, i32)>,
 }
 
