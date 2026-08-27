@@ -1,19 +1,19 @@
 //! Runs against a real trained checkpoint when one is present.
 //!
-//! Set GLYPH_ML_TEST_MODEL to a model directory. Without it these
+//! Set FONT_ML_TEST_MODEL to a model directory. Without it these
 //! skip, so the suite still passes on a machine that has no
 //! checkpoints (CI, a fresh clone).
 
-use glyph_ml::{outline::OutlineModel, Checkpoint, ModelKind};
+use font_ml::{outline::OutlineModel, Checkpoint, ModelKind};
 
 fn model_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("GLYPH_ML_TEST_MODEL").map(Into::into)
+    std::env::var_os("FONT_ML_TEST_MODEL").map(Into::into)
 }
 
 #[test]
 fn a_real_checkpoint_loads_and_runs() {
     let Some(dir) = model_dir() else {
-        eprintln!("skipped: set GLYPH_ML_TEST_MODEL to a model directory");
+        eprintln!("skipped: set FONT_ML_TEST_MODEL to a model directory");
         return;
     };
 

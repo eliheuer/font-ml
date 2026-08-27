@@ -1,4 +1,4 @@
-# glyph-ml
+# font-ml
 
 Run small local models over font sources.
 
@@ -8,6 +8,45 @@ command line, an editor embeds it, an agent calls it as a library or
 shells out and reads JSON back. All three get the same behaviour.
 
 Nothing is downloaded and nothing phones home. You point at a folder.
+
+## Not only glyphs
+
+A font is more than a pile of outlines, and the interesting models are
+not all glyph models. Kerning is a property of a *pair*. Spacing is a
+property of a glyph in company. Feature code is a property of the whole
+font. The crate names those jobs separately, so a caller can ask what a
+given model actually does rather than assume:
+
+```sh
+font-ml tasks
+bolden     not built yet  needs: source, glyph, from-master, to-master
+complete   not built yet  needs: source, glyph, prefix
+generate   not built yet  needs: glyph
+spacing    not built yet  needs: source, glyph
+kerning    not built yet  needs: source, left, right
+field      not built yet  needs: glyph
+```
+
+Naming a task is not claiming it works. `implemented` says whether it
+does, and today none of them do: the tokenizer, the weight loading and
+the forward pass are in place, and the operations built on them are
+not.
+
+## For agents
+
+The command line is meant to be driven by a program as readily as by a
+person.
+
+- `--json` on every command, one object out.
+- **Capability discovery**: `font-ml describe <model> --json` reports
+  the model's shape and its tasks with an `implemented` flag and the
+  inputs each one needs. A caller finds out what is possible instead of
+  guessing and parsing an error message.
+- **Stable exit codes**: `0` fine, `2` the request did not make sense,
+  `3` it made sense and is not built yet, `4` it failed. "Not built
+  yet" and "you asked wrongly" are different answers and should not
+  need string matching to tell apart.
+- No prompts, no terminal required, no network.
 
 ## Two kinds of model
 
@@ -54,8 +93,10 @@ Early. What works today:
   from the training lab and tested against its id layout
 - loading and running an outline model through
   [candle](https://github.com/huggingface/candle)
+- `models`, `describe` and `tasks` on the command line
 
-Field models are declared in the format and not yet implemented.
+Not yet: any of the tasks, reading UFO sources, and field models, which
+are declared in the format so it does not have to change later.
 
 ## Rust version
 
@@ -68,7 +109,7 @@ which is what the editors embedding this pin.
 The unit tests need nothing. To exercise a trained model:
 
 ```sh
-GLYPH_ML_TEST_MODEL=/path/to/run cargo test --test real_checkpoint -- --nocapture
+FONT_ML_TEST_MODEL=/path/to/run cargo test --test real_checkpoint -- --nocapture
 ```
 
 It checks that the vocabulary this crate builds is the size the

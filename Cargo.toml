@@ -1,15 +1,20 @@
 [package]
-name = "glyph-ml"
+name = "font-ml"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
-description = "Run small local models over font sources: outline sequence models and signed distance field models, on UFO glyphs"
-repository = "https://github.com/eliheuer/glyph-ml"
+description = "Run small local models over font sources: outlines, spacing, kerning. For people, editors, and agents."
+repository = "https://github.com/eliheuer/font-ml"
 readme = "README.md"
 keywords = ["font", "type-design", "machine-learning", "ufo", "glyph"]
 categories = ["science", "graphics"]
 
+[[bin]]
+name = "font-ml"
+path = "src/bin/font-ml.rs"
+
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 # candle 0.9, not 0.11: 0.11 uses the unstable stdarch_neon_f16 feature
 # on aarch64 and needs a nightly toolchain. Everything here builds on
 # stable, which is what the editors embedding this pin.

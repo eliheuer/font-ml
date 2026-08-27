@@ -38,7 +38,9 @@
 pub mod checkpoint;
 pub mod error;
 pub mod outline;
+pub mod task;
 pub mod tokenizer;
 
 pub use checkpoint::{Checkpoint, ModelConfig, ModelKind};
 pub use error::{Error, Result};
+pub use task::Task;
