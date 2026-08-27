@@ -1,0 +1,25 @@
+[package]
+name = "glyph-ml"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+description = "Run small local models over font sources: outline sequence models and signed distance field models, on UFO glyphs"
+repository = "https://github.com/eliheuer/glyph-ml"
+readme = "README.md"
+keywords = ["font", "type-design", "machine-learning", "ufo", "glyph"]
+categories = ["science", "graphics"]
+
+[dependencies]
+# candle 0.9, not 0.11: 0.11 uses the unstable stdarch_neon_f16 feature
+# on aarch64 and needs a nightly toolchain. Everything here builds on
+# stable, which is what the editors embedding this pin.
+candle-core = "0.9"
+candle-nn = "0.9"
+kurbo = "0.13"
+norad = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
