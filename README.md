@@ -124,6 +124,22 @@ The outer edges of the stems move out, the inner edges move in, and
 the advance grows: the stems thicken and the counter narrows, which is
 what boldening an H is.
 
+### Scoring a model
+
+A prediction that moves many points is not thereby a good one. `eval`
+scores against a master somebody drew, next to the dumb answer: shift
+every point by the mean offset.
+
+```sh
+font-ml eval --model runs/v09-pre \
+    --regular Regular.ufo --bold Bold.ufo --glyphs B,g,two
+```
+
+A model that cannot beat that baseline has not learned anything worth
+running.
+
+### Notes
+
 Predictions are greedy, so the same input gives the same answer twice.
 A designer reviewing a proposal should not have to wonder whether
 rerunning it would have been better.

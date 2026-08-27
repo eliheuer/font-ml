@@ -89,6 +89,8 @@ fn boldening_a_real_glyph_keeps_it_compatible() {
         glyph.width,
         &ops,
         center,
+        ckpt.config.trim_close,
+        1.0,
     )
     .expect("bolden");
 
@@ -96,7 +98,11 @@ fn boldening_a_real_glyph_keeps_it_compatible() {
         result.is_compatible(),
         "the predicted master is not point-compatible with the source"
     );
-    assert_eq!(result.deltas.len(), count_points(&ops));
+    assert_eq!(
+        result.deltas.len(),
+        count_points(&ops),
+        "one offset per point, trimmed points restored"
+    );
 
     let moved = result.deltas.iter().filter(|(x, y)| *x != 0 || *y != 0).count();
     eprintln!(

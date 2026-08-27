@@ -56,6 +56,12 @@ impl Bolden {
 ///
 /// `center` is the offset the model's deltas are measured from, and
 /// comes from the checkpoint's `delta_center`.
+///
+/// `strength` scales the predicted offsets. A model can be well
+/// calibrated in direction and short in magnitude, which looks like a
+/// prediction that is right but too light; scaling corrects that
+/// without changing which way anything moved. 1.0 leaves the
+/// prediction alone.
 pub fn bolden(
     model: &OutlineModel,
     glyph: &str,
@@ -63,6 +69,8 @@ pub fn bolden(
     advance: f64,
     ops: &[Op],
     center: (i32, i32),
+    trim_close: bool,
+    strength: f64,
 ) -> Result<Bolden> {
     let v = model.vocab();
     let mut tokens: Vec<u32> = Vec::new();
@@ -86,18 +94,35 @@ pub fn bolden(
     let advance_delta = predict_delta(model, &mut tokens, v)?;
 
     let mut deltas = Vec::new();
-    for op in ops {
+    let mut start = (0.0, 0.0);
+    let mut trimmed = vec![false; ops.len()];
+    for (i, op) in ops.iter().enumerate() {
         match op {
             Op::ClosePath => {
                 tokens.push(v.special("CLOSE").unwrap() as u32);
             }
             _ => {
-                let (name, points): (&str, Vec<(f64, f64)>) = match op {
+                let (name, mut points): (&str, Vec<(f64, f64)>) = match op {
                     Op::MoveTo(x, y) => ("MOVE", vec![(*x, *y)]),
                     Op::LineTo(x, y) => ("LINE", vec![(*x, *y)]),
                     Op::CurveTo(p) => ("CURVE", p.to_vec()),
                     Op::ClosePath => unreachable!(),
                 };
+                if matches!(op, Op::MoveTo(..)) {
+                    start = points[0];
+                }
+                // A closed contour ends by returning to its start, and
+                // the training data drops that duplicated point. Feed
+                // it in and the model meets a sequence it never saw,
+                // at every contour boundary.
+                if trim_close
+                    && matches!(ops.get(i + 1), Some(Op::ClosePath))
+                    && points.last().map(|p| (v.coord(p.0), v.coord(p.1)))
+                        == Some((v.coord(start.0), v.coord(start.1)))
+                {
+                    points.pop();
+                    trimmed[i] = true;
+                }
                 tokens.push(v.special(name).unwrap() as u32);
                 for (x, y) in points {
                     // Forced: the source coordinate, not a prediction.
@@ -112,6 +137,22 @@ pub fn bolden(
     }
 
     let from = snapped(v, ops);
+    // A trimmed point produced no offset, so the closing point of each
+    // trimmed contour reuses the offset its start point got.
+    let deltas = restore_trimmed(ops, &deltas, &trimmed);
+    let deltas: Vec<(i32, i32)> = if (strength - 1.0).abs() < f64::EPSILON {
+        deltas
+    } else {
+        deltas
+            .iter()
+            .map(|(x, y)| {
+                (
+                    (*x as f64 * strength).round() as i32,
+                    (*y as f64 * strength).round() as i32,
+                )
+            })
+            .collect()
+    };
     let to = apply(&from, &deltas, center);
     Ok(Bolden { from, to, advance_delta, deltas })
 }
@@ -144,6 +185,45 @@ fn argmax_delta(logits: &Tensor, v: &Vocab) -> Result<usize> {
     let slice = logits.narrow(D::Minus1, base, count)?;
     let best = slice.argmax(D::Minus1)?.to_scalar::<u32>()? as usize;
     Ok(base + best)
+}
+
+/// Put back one offset for every point that was trimmed out of the
+/// token stream, so the returned list has one entry per point in
+/// `ops` and a caller can map them positionally.
+///
+/// The trimmed point is a contour's closing duplicate of its start, so
+/// it takes the same offset the start took. Anything else would open
+/// the contour.
+fn restore_trimmed(
+    ops: &[Op],
+    deltas: &[(i32, i32)],
+    trimmed: &[bool],
+) -> Vec<(i32, i32)> {
+    if !trimmed.iter().any(|t| *t) {
+        return deltas.to_vec();
+    }
+    let mut out = Vec::with_capacity(deltas.len() + 1);
+    let mut next = deltas.iter().copied();
+    let mut contour_start: Option<(i32, i32)> = None;
+    for (i, op) in ops.iter().enumerate() {
+        let count = match op {
+            Op::MoveTo(..) | Op::LineTo(..) => 1,
+            Op::CurveTo(_) => 3,
+            Op::ClosePath => 0,
+        };
+        let taken = if trimmed[i] { count - 1 } else { count };
+        for k in 0..taken {
+            let d = next.next().unwrap_or((0, 0));
+            if matches!(op, Op::MoveTo(..)) && k == 0 {
+                contour_start = Some(d);
+            }
+            out.push(d);
+        }
+        if trimmed[i] {
+            out.push(contour_start.unwrap_or((0, 0)));
+        }
+    }
+    out
 }
 
 /// The input as the model saw it: coordinates on the grid.
@@ -224,6 +304,17 @@ mod tests {
         let to = apply(&from, &[(5, 5)], (0, 0));
         assert_eq!(to[0], Op::MoveTo(5.0, 5.0));
         assert_eq!(to[1], Op::LineTo(10.0, 0.0));
+    }
+
+    #[test]
+    fn strength_scales_offsets_without_changing_direction() {
+        let scaled: Vec<(i32, i32)> = [(10, -4), (-6, 2)]
+            .iter()
+            .map(|(x, y)| {
+                ((*x as f64 * 2.0).round() as i32, (*y as f64 * 2.0).round() as i32)
+            })
+            .collect();
+        assert_eq!(scaled, vec![(20, -8), (-12, 4)]);
     }
 
     #[test]

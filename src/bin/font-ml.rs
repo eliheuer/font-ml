@@ -58,6 +58,27 @@ enum Command {
     },
     /// List every task this tool knows about, and whether it works.
     Tasks,
+    /// Score a model against a master somebody drew.
+    Eval {
+        /// The model directory.
+        #[arg(long)]
+        model: PathBuf,
+        /// The lighter master.
+        #[arg(long)]
+        regular: PathBuf,
+        /// The heavier master, drawn by hand.
+        #[arg(long)]
+        bold: PathBuf,
+        /// Glyphs to score. Defaults to every drawn glyph in both.
+        #[arg(long, value_delimiter = ',')]
+        glyphs: Option<Vec<String>>,
+        /// Stop after this many glyphs.
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        /// Scale predicted offsets before scoring.
+        #[arg(long, default_value = "1.0")]
+        strength: f64,
+    },
     /// Run a task.
     Run {
         /// Task name, as listed by `tasks`.
@@ -71,6 +92,9 @@ enum Command {
         /// Which glyph to run on.
         #[arg(long)]
         glyph: Option<String>,
+        /// Scale the predicted offsets. Above 1 boldens harder.
+        #[arg(long, default_value = "1.0")]
+        strength: f64,
     },
 }
 
@@ -83,9 +107,17 @@ fn main() -> ExitCode {
             tasks(cli.json);
             exit::OK
         }
-        Command::Run { task, model, source, glyph } => {
-            run(&task, &model, source.as_deref(), glyph.as_deref(), cli.json)
+        Command::Eval { model, regular, bold, glyphs, limit, strength } => {
+            eval(&model, &regular, &bold, glyphs, limit, strength, cli.json)
         }
+        Command::Run { task, model, source, glyph, strength } => run(
+            &task,
+            &model,
+            source.as_deref(),
+            glyph.as_deref(),
+            strength,
+            cli.json,
+        ),
     };
     ExitCode::from(code)
 }
@@ -203,6 +235,7 @@ fn run(
     model: &PathBuf,
     source: Option<&std::path::Path>,
     glyph: Option<&str>,
+    strength: f64,
     json: bool,
 ) -> u8 {
     let task: Task = match task.parse() {
@@ -224,7 +257,7 @@ fn run(
         );
     }
     match task {
-        Task::Bolden => bolden(&checkpoint, source, glyph, json),
+        Task::Bolden => bolden(&checkpoint, source, glyph, strength, json),
         _ => fail(json, exit::FAILED, "a ready task with no runner"),
     }
 }
@@ -233,6 +266,7 @@ fn bolden(
     checkpoint: &Checkpoint,
     source: Option<&std::path::Path>,
     glyph: Option<&str>,
+    strength: f64,
     json: bool,
 ) -> u8 {
     let (Some(source), Some(name)) = (source, glyph) else {
@@ -267,7 +301,14 @@ fn bolden(
         .unwrap_or((0, 0));
     let unicode = g.codepoints.iter().next().map(|c| c as u32);
     let result = match font_ml::bolden::bolden(
-        &model, name, unicode, g.width, &ops, center,
+        &model,
+        name,
+        unicode,
+        g.width,
+        &ops,
+        center,
+        checkpoint.config.trim_close,
+        strength,
     ) {
         Ok(r) => r,
         Err(e) => return fail(json, exit::FAILED, &e.to_string()),
@@ -295,6 +336,131 @@ fn bolden(
             "{name}: {moved}/{} points moved, advance {:+}",
             result.deltas.len(),
             result.advance_delta
+        );
+    }
+    exit::OK
+}
+
+fn eval(
+    model_dir: &PathBuf,
+    regular: &PathBuf,
+    bold: &PathBuf,
+    glyphs: Option<Vec<String>>,
+    limit: usize,
+    strength: f64,
+    json: bool,
+) -> u8 {
+    let checkpoint = match Checkpoint::open(model_dir) {
+        Ok(c) => c,
+        Err(e) => return fail(json, exit::USAGE, &e.to_string()),
+    };
+    let (Ok(reg_font), Ok(bold_font)) =
+        (norad::Font::load(regular), norad::Font::load(bold))
+    else {
+        return fail(json, exit::USAGE, "could not load both masters");
+    };
+    let model = match font_ml::outline::OutlineModel::load(&checkpoint) {
+        Ok(m) => m,
+        Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+    };
+    let center = checkpoint
+        .config
+        .delta_center
+        .map(|c| (c[0], c[1]))
+        .unwrap_or((0, 0));
+
+    // Candidates: named, or every glyph drawn in both masters.
+    let names: Vec<String> = match glyphs {
+        Some(g) => g,
+        None => reg_font
+            .default_layer()
+            .iter()
+            .map(|g| g.name().to_string())
+            .collect(),
+    };
+
+    let mut scores = Vec::new();
+    for name in names {
+        if scores.len() >= limit {
+            break;
+        }
+        let Ok(key) = norad::Name::new(&name) else { continue };
+        let (Some(rg), Some(bg)) = (
+            reg_font.default_layer().get_glyph(&key),
+            bold_font.default_layer().get_glyph(&key),
+        ) else {
+            continue;
+        };
+        let (Some(reg_ops), Some(bold_ops)) =
+            (font_ml::ufo::glyph_ops(rg), font_ml::ufo::glyph_ops(bg))
+        else {
+            continue;
+        };
+        // Only comparable when the masters already agree structurally.
+        if font_ml::eval::points(&reg_ops).len()
+            != font_ml::eval::points(&bold_ops).len()
+        {
+            continue;
+        }
+        let unicode = rg.codepoints.iter().next().map(|c| c as u32);
+        let Ok(result) = font_ml::bolden::bolden(
+            &model,
+            &name,
+            unicode,
+            rg.width,
+            &reg_ops,
+            center,
+            checkpoint.config.trim_close,
+            strength,
+        ) else {
+            continue;
+        };
+        scores.push(font_ml::eval::score(
+            &name,
+            &result.to,
+            &bold_ops,
+            &result.from,
+            (center.0 as f64, center.1 as f64),
+        ));
+    }
+
+    if scores.is_empty() {
+        return fail(json, exit::FAILED, "no comparable glyphs");
+    }
+    let mean = |f: fn(&font_ml::eval::Score) -> f64| -> f64 {
+        scores.iter().map(f).sum::<f64>() / scores.len() as f64
+    };
+    let model_mae = mean(|s| s.model);
+    let baseline_mae = mean(|s| s.baseline);
+    let won = scores.iter().filter(|s| s.model < s.baseline).count();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "glyphs": scores.len(),
+                "model_mae": model_mae,
+                "baseline_mae": baseline_mae,
+                "beats_baseline": won,
+                "per_glyph": scores.iter().map(|s| serde_json::json!({
+                    "glyph": s.glyph,
+                    "points": s.points,
+                    "model": s.model,
+                    "baseline": s.baseline,
+                })).collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        println!("{:>12} {:>10} {:>10}", "glyph", "model", "baseline");
+        for s in &scores {
+            let mark = if s.model < s.baseline { " " } else { " <-" };
+            println!("{:>12} {:>10.1} {:>10.1}{mark}", s.glyph, s.model, s.baseline);
+        }
+        println!();
+        println!(
+            "{} glyphs: model {model_mae:.1}, baseline {baseline_mae:.1}, \
+             model wins on {won}",
+            scores.len()
         );
     }
     exit::OK
