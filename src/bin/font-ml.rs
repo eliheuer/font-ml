@@ -400,18 +400,23 @@ fn eval(
                 .map(|v| *v * 0.25)
                 .unwrap_or(256.0)
         });
-    // The weight the heavier master already carries, from its own
-    // drawn glyphs. Computed once at the same height everything else
-    // is measured at: it is a property of the master, not of any one
-    // prediction.
+    // How much weight the two masters differ by, learned from a few
+    // glyphs drawn in both. Each glyph then adds that much to what it
+    // already carries, rather than being pushed to one shared number,
+    // which would flatten weights that are meant to differ.
     let reference: Option<f64> = {
-        let paths: Vec<_> = ["n", "i", "l", "h", "m", "u", "H", "I", "E"]
+        let pairs: Vec<_> = ["n", "o", "H", "O", "i", "l", "h", "m", "u", "I", "E"]
             .iter()
-            .filter_map(|n| bold_font.default_layer().get_glyph(*n))
-            .filter_map(font_ml::ufo::glyph_ops)
-            .map(|ops| font_ml::stems::ops_to_path(&ops))
+            .filter_map(|n| {
+                let light = reg_font.default_layer().get_glyph(*n)?;
+                let heavy = bold_font.default_layer().get_glyph(*n)?;
+                Some((
+                    font_ml::stems::ops_to_path(&font_ml::ufo::glyph_ops(light)?),
+                    font_ml::stems::ops_to_path(&font_ml::ufo::glyph_ops(heavy)?),
+                ))
+            })
             .collect();
-        font_ml::stems::reference_stem(&paths, stem_height)
+        font_ml::stems::reference_delta(&pairs, stem_height)
     };
     for name in names {
         if scores.len() >= limit {
@@ -451,9 +456,12 @@ fn eval(
         // Re-run at a strength fitted to the weight already in the
         // heavier master, rather than a number somebody guessed.
         let result = if fit_stems {
-            let fitted = reference.and_then(|target| {
+            let from_path = font_ml::stems::ops_to_path(&result.from);
+            let fitted = reference.and_then(|delta| {
+                let target =
+                    font_ml::stems::target_from_delta(&from_path, delta, stem_height)?;
                 font_ml::stems::fit_strength(
-                    &font_ml::stems::ops_to_path(&result.from),
+                    &from_path,
                     &font_ml::stems::ops_to_path(&result.to),
                     target,
                     stem_height,

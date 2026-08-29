@@ -333,3 +333,82 @@ mod narrowness_tests {
         assert_eq!(stem_at(&p, 250.0), Some(90.0));
     }
 }
+
+/// How much weight a pair of masters adds, learned from glyphs drawn
+/// in both.
+///
+/// This is the "draw n, o, H, O and let the reference carry the rest"
+/// workflow. Rather than a single target every glyph is pushed to, the
+/// reference pairs say how far the weight moved, and each glyph is
+/// asked to move by the same amount from wherever it already sits.
+///
+/// A constant delta rather than a ratio because that is how a
+/// systematic family is drawn. Virtua Grotesk's notes put the growth
+/// in quanta: verticals +96, bars +72, curve horizontals +48. Its cap
+/// and lowercase stems both add 96, from 104 and 96, which one target
+/// cannot express and one delta can.
+///
+/// The median across the pairs, so one odd reference cannot set the
+/// weight for the whole master.
+pub fn reference_delta(pairs: &[(BezPath, BezPath)], y: f64) -> Option<f64> {
+    let deltas: Vec<f64> = pairs
+        .iter()
+        .filter_map(|(light, heavy)| Some(stem_at(heavy, y)? - stem_at(light, y)?))
+        .collect();
+    median(deltas)
+}
+
+/// The weight a glyph should carry: what it has now, plus what the
+/// reference pairs added.
+pub fn target_from_delta(regular: &BezPath, delta: f64, y: f64) -> Option<f64> {
+    Some(stem_at(regular, y)? + delta)
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    fn bar(width: f64) -> BezPath {
+        let mut p = BezPath::new();
+        for x in [0.0, 900.0] {
+            p.move_to((x, 0.0));
+            p.line_to((x + width, 0.0));
+            p.line_to((x + width, 500.0));
+            p.line_to((x, 500.0));
+            p.close_path();
+        }
+        p
+    }
+
+    /// Two references that add the same amount from different starting
+    /// weights: the delta is what they agree on, and it is what a
+    /// third glyph should be asked to add.
+    #[test]
+    fn the_reference_teaches_a_delta_not_a_target() {
+        let pairs = vec![
+            (bar(96.0), bar(192.0)),  // lowercase: +96
+            (bar(104.0), bar(200.0)), // caps: also +96
+        ];
+        let delta = reference_delta(&pairs, 250.0).expect("measurable");
+        assert_eq!(delta, 96.0);
+        // A glyph starting somewhere else still adds the same.
+        let target = target_from_delta(&bar(100.0), delta, 250.0).expect("measurable");
+        assert_eq!(target, 196.0);
+    }
+
+    /// The failure a single target would cause: pushing the caps to
+    /// the lowercase weight, losing the 8 units between them.
+    #[test]
+    fn a_delta_keeps_weights_that_differ_apart() {
+        let pairs = vec![(bar(96.0), bar(192.0)), (bar(104.0), bar(200.0))];
+        let delta = reference_delta(&pairs, 250.0).expect("measurable");
+        let lower = target_from_delta(&bar(96.0), delta, 250.0).unwrap();
+        let caps = target_from_delta(&bar(104.0), delta, 250.0).unwrap();
+        assert_eq!(caps - lower, 8.0, "the two weights stay apart");
+    }
+
+    #[test]
+    fn a_reference_that_cannot_be_measured_gives_nothing() {
+        assert!(reference_delta(&[], 250.0).is_none());
+    }
+}
