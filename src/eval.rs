@@ -56,6 +56,20 @@ pub fn mean_abs_error(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
     total / (a.len() as f64 * 2.0)
 }
 
+/// Stem widths at `y`, for the prediction and for the real thing.
+///
+/// Reported next to the point error because they answer different
+/// questions. Point error says how close the prediction landed. Stem
+/// width says whether the result carries the right weight, which is
+/// what a reader sees and what the point error cannot tell you: the
+/// same error spread around a bowl is invisible, and concentrated on
+/// one side of a stem it is a letter that reads wrong.
+pub fn stem_comparison(predicted: &[Op], actual: &[Op], y: f64) -> Option<(f64, f64)> {
+    let p = crate::stems::stem_at(&crate::stems::ops_to_path(predicted), y)?;
+    let a = crate::stems::stem_at(&crate::stems::ops_to_path(actual), y)?;
+    Some((p, a))
+}
+
 /// Score a prediction against the real thing.
 ///
 /// `mean_delta` is the baseline shift, normally the corpus mean the
@@ -109,5 +123,41 @@ mod tests {
         let a = [(0.0, 0.0)];
         let b = [(0.0, 0.0), (1.0, 1.0)];
         assert!(mean_abs_error(&a, &b).is_nan());
+    }
+}
+
+#[cfg(test)]
+mod stem_tests {
+    use super::*;
+
+    /// Two stems, so each is a narrow part of the glyph rather than
+    /// the whole of it.
+    fn bar(width: f64) -> Vec<Op> {
+        let mut ops = Vec::new();
+        for x in [0.0f64, 900.0] {
+            ops.extend([
+                Op::MoveTo(x, 0.0),
+                Op::LineTo(x + width, 0.0),
+                Op::LineTo(x + width, 500.0),
+                Op::LineTo(x, 500.0),
+                Op::ClosePath,
+            ]);
+        }
+        ops
+    }
+
+    /// The case that makes stem width worth reporting: a prediction
+    /// can sit close on average and still carry the wrong weight.
+    #[test]
+    fn stems_are_compared_at_a_height() {
+        let predicted = bar(90.0);
+        let actual = bar(120.0);
+        let (p, a) = stem_comparison(&predicted, &actual, 250.0).expect("both measurable");
+        assert_eq!((p, a), (90.0, 120.0));
+    }
+
+    #[test]
+    fn an_unmeasurable_height_reports_nothing() {
+        assert!(stem_comparison(&bar(90.0), &bar(120.0), 900.0).is_none());
     }
 }

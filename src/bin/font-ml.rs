@@ -78,6 +78,10 @@ enum Command {
         /// Scale predicted offsets before scoring.
         #[arg(long, default_value = "1.0")]
         strength: f64,
+        /// Fit the strength per glyph so stems land on the weight the
+        /// heavier master already carries, instead of using --strength.
+        #[arg(long)]
+        fit_stems: bool,
     },
     /// Run a task.
     Run {
@@ -107,8 +111,8 @@ fn main() -> ExitCode {
             tasks(cli.json);
             exit::OK
         }
-        Command::Eval { model, regular, bold, glyphs, limit, strength } => {
-            eval(&model, &regular, &bold, glyphs, limit, strength, cli.json)
+        Command::Eval { model, regular, bold, glyphs, limit, strength, fit_stems } => {
+            eval(&model, &regular, &bold, glyphs, limit, strength, fit_stems, cli.json)
         }
         Command::Run { task, model, source, glyph, strength } => run(
             &task,
@@ -348,6 +352,7 @@ fn eval(
     glyphs: Option<Vec<String>>,
     limit: usize,
     strength: f64,
+    fit_stems: bool,
     json: bool,
 ) -> u8 {
     let checkpoint = match Checkpoint::open(model_dir) {
@@ -380,6 +385,34 @@ fn eval(
     };
 
     let mut scores = Vec::new();
+    let mut stems: Vec<(String, f64, f64)> = Vec::new();
+    // The x-height from the heavier master, halved. Falling back to a
+    // fraction of the em keeps this working on a source that never
+    // filled in its metrics.
+    let stem_height = bold_font
+        .font_info
+        .x_height
+        .map(|v| v / 2.0)
+        .unwrap_or_else(|| {
+            bold_font
+                .font_info
+                .units_per_em
+                .map(|v| *v * 0.25)
+                .unwrap_or(256.0)
+        });
+    // The weight the heavier master already carries, from its own
+    // drawn glyphs. Computed once at the same height everything else
+    // is measured at: it is a property of the master, not of any one
+    // prediction.
+    let reference: Option<f64> = {
+        let paths: Vec<_> = ["n", "i", "l", "h", "m", "u", "H", "I", "E"]
+            .iter()
+            .filter_map(|n| bold_font.default_layer().get_glyph(*n))
+            .filter_map(font_ml::ufo::glyph_ops)
+            .map(|ops| font_ml::stems::ops_to_path(&ops))
+            .collect();
+        font_ml::stems::reference_stem(&paths, stem_height)
+    };
     for name in names {
         if scores.len() >= limit {
             break;
@@ -415,6 +448,34 @@ fn eval(
         ) else {
             continue;
         };
+        // Re-run at a strength fitted to the weight already in the
+        // heavier master, rather than a number somebody guessed.
+        let result = if fit_stems {
+            let fitted = reference.and_then(|target| {
+                font_ml::stems::fit_strength(
+                    &font_ml::stems::ops_to_path(&result.from),
+                    &font_ml::stems::ops_to_path(&result.to),
+                    target,
+                    stem_height,
+                )
+            });
+            match fitted.filter(|s| s.is_finite() && *s > 0.25 && *s < 4.0) {
+                Some(s) => font_ml::bolden::bolden(
+                    &model,
+                    &name,
+                    unicode,
+                    rg.width,
+                    &reg_ops,
+                    center,
+                    checkpoint.config.trim_close,
+                    s,
+                )
+                .unwrap_or(result),
+                None => result,
+            }
+        } else {
+            result
+        };
         scores.push(font_ml::eval::score(
             &name,
             &result.to,
@@ -422,11 +483,26 @@ fn eval(
             &result.from,
             (center.0 as f64, center.1 as f64),
         ));
+        // Half the x-height is where a lowercase stem is a stem and
+        // not yet a join or a terminal.
+        if let Some((p, a)) =
+            font_ml::eval::stem_comparison(&result.to, &bold_ops, stem_height)
+        {
+            stems.push((name.clone(), p, a));
+        }
     }
 
     if scores.is_empty() {
         return fail(json, exit::FAILED, "no comparable glyphs");
     }
+    // Mean absolute stem error, and how many carry the right weight
+    // within 4 units, which is about where a difference stops showing.
+    let stem_mae = if stems.is_empty() {
+        None
+    } else {
+        Some(stems.iter().map(|(_, p, a)| (p - a).abs()).sum::<f64>() / stems.len() as f64)
+    };
+    let stem_ok = stems.iter().filter(|(_, p, a)| (p - a).abs() <= 4.0).count();
     let mean = |f: fn(&font_ml::eval::Score) -> f64| -> f64 {
         scores.iter().map(f).sum::<f64>() / scores.len() as f64
     };
@@ -442,6 +518,9 @@ fn eval(
                 "model_mae": model_mae,
                 "baseline_mae": baseline_mae,
                 "beats_baseline": won,
+                "stems_measured": stems.len(),
+                "stem_mae": stem_mae,
+                "stems_within_4_units": stem_ok,
                 "per_glyph": scores.iter().map(|s| serde_json::json!({
                     "glyph": s.glyph,
                     "points": s.points,
@@ -451,10 +530,23 @@ fn eval(
             })
         );
     } else {
-        println!("{:>12} {:>10} {:>10}", "glyph", "model", "baseline");
+        println!(
+            "{:>12} {:>8} {:>9} {:>8} {:>8}",
+            "glyph", "model", "baseline", "stem", "wanted"
+        );
         for s in &scores {
             let mark = if s.model < s.baseline { " " } else { " <-" };
-            println!("{:>12} {:>10.1} {:>10.1}{mark}", s.glyph, s.model, s.baseline);
+            let stem = stems.iter().find(|(n, _, _)| *n == s.glyph);
+            match stem {
+                Some((_, p, a)) => println!(
+                    "{:>12} {:>8.1} {:>9.1} {:>8.0} {:>8.0}{mark}",
+                    s.glyph, s.model, s.baseline, p, a
+                ),
+                None => println!(
+                    "{:>12} {:>8.1} {:>9.1} {:>8} {:>8}{mark}",
+                    s.glyph, s.model, s.baseline, "-", "-"
+                ),
+            }
         }
         println!();
         println!(
@@ -462,6 +554,14 @@ fn eval(
              model wins on {won}",
             scores.len()
         );
+        match stem_mae {
+            Some(mae) => println!(
+                "{} stems measured: off by {mae:.1} units on average, \
+                 {stem_ok} within 4",
+                stems.len()
+            ),
+            None => println!("no stems could be measured at that height"),
+        }
     }
     exit::OK
 }
