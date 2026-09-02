@@ -163,9 +163,9 @@ between a batch job and something an editor can offer while you draw.
 
 ## Rust version
 
-candle **0.9**, not 0.11: 0.11 uses the unstable `stdarch_neon_f16`
-feature on aarch64 and needs nightly. Everything here builds on stable,
-which is what the editors embedding this pin.
+candle 0.11 builds on stable Rust with the `accelerate` feature on
+Apple Silicon, verified with rustc 1.96. Everything here builds on
+stable, which is what the editors embedding this pin.
 
 ## Testing against a real checkpoint
 

@@ -15,11 +15,10 @@ path = "src/bin/font-ml.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-# candle 0.9, not 0.11: 0.11 uses the unstable stdarch_neon_f16 feature
-# on aarch64 and needs a nightly toolchain. Everything here builds on
-# stable, which is what the editors embedding this pin.
-candle-core = "0.9"
-candle-nn = "0.9"
+# Verified 2026-09-01: candle 0.11 builds on stable rustc 1.96 with
+# accelerate on aarch64. The old nightly-only note no longer applies.
+candle-core = "0.11"
+candle-nn = "0.11"
 kurbo = "0.13"
 norad = "0.18"
 serde = { version = "1", features = ["derive"] }
