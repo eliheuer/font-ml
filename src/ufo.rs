@@ -1,10 +1,96 @@
-//! Reading glyph outlines out of UFO sources.
+//! Reading glyph outlines out of UFO sources, and writing proposals
+//! back in.
 //!
 //! Only drawn outlines are offered. A composite is a reference to
 //! other glyphs, so predicting its outline would be answering the
 //! wrong question: fix the base and the composite follows.
+//!
+//! A prediction goes back into the UFO as a *proposal*: a layer named
+//! `com.runebender.proposal.<task>` holding the predicted glyphs. The
+//! foreground is untouched. An editor that knows the convention
+//! (Runebender does) shows the layer and lets the designer install or
+//! discard it, one undo step per glyph. Any other UFO tool sees an
+//! ordinary layer it can inspect or delete.
 
 use crate::tokenizer::Op;
+
+/// Every proposal layer starts with this.
+pub const PROPOSAL_PREFIX: &str = "com.runebender.proposal.";
+
+/// The layer a task's proposal goes in.
+pub fn proposal_layer(task: &str) -> String {
+    format!("{PROPOSAL_PREFIX}{task}")
+}
+
+/// Move a glyph's points by predicted offsets, in the order
+/// [`glyph_ops`] read them, and return the moved contours.
+///
+/// Walks the same contours in the same rotation the reader used, so
+/// offset *n* lands on the point it was predicted for. Point types
+/// and smooth flags are left alone: this moves points and nothing
+/// else. `center` is the checkpoint's `delta_center`, added to every
+/// offset.
+pub fn apply_deltas(
+    glyph: &norad::Glyph,
+    deltas: &[(i32, i32)],
+    center: (i32, i32),
+) -> Vec<norad::Contour> {
+    let mut next = deltas.iter();
+    let mut out = Vec::with_capacity(glyph.contours.len());
+    for contour in &glyph.contours {
+        let points = &contour.points;
+        let start = points
+            .iter()
+            .position(|p| p.typ != norad::PointType::OffCurve)
+            .unwrap_or(0);
+        let n = points.len();
+        let mut moved = points.clone();
+        for step in 0..n {
+            let i = (start + step) % n;
+            let Some((dx, dy)) = next.next().copied() else {
+                break;
+            };
+            moved[i].x += f64::from(dx + center.0);
+            moved[i].y += f64::from(dy + center.1);
+        }
+        // The reader ends a closed contour by returning to its start,
+        // so it yields one offset more than the contour has points.
+        // Drop it, or every later contour is shifted by one point.
+        next.next();
+        out.push(norad::Contour::new(moved, contour.identifier().cloned()));
+    }
+    out
+}
+
+/// A predicted glyph as it goes into a proposal layer: the source
+/// glyph's name and metadata, with the moved contours and the new
+/// advance.
+pub fn proposed_glyph(
+    source: &norad::Glyph,
+    contours: Vec<norad::Contour>,
+    advance_delta: i32,
+) -> norad::Glyph {
+    let mut glyph = source.clone();
+    glyph.contours = contours;
+    glyph.width = source.width + f64::from(advance_delta);
+    glyph
+}
+
+/// Put predicted glyphs into the task's proposal layer, replacing any
+/// glyph of the same name already proposed. Nothing else in the font
+/// changes. Returns the layer's name.
+pub fn write_proposal(
+    font: &mut norad::Font,
+    task: &str,
+    glyphs: impl IntoIterator<Item = norad::Glyph>,
+) -> Result<String, norad::error::NamingError> {
+    let name = proposal_layer(task);
+    let layer = font.layers.get_or_create_layer(&name)?;
+    for glyph in glyphs {
+        layer.insert_glyph(glyph);
+    }
+    Ok(name)
+}
 
 /// The drawing commands of a glyph, or `None` if it has nothing to
 /// draw or is built from components.
@@ -114,6 +200,56 @@ mod tests {
         );
         let ops = contour_ops(&c).unwrap();
         assert_eq!(ops[0], Op::MoveTo(10.0, 10.0));
+    }
+
+    #[test]
+    fn deltas_land_on_the_points_they_were_predicted_for() {
+        // Two contours. The reader yields one extra offset per contour
+        // (the return to start), which must be skipped, or the second
+        // contour's points get the wrong offsets.
+        let mut g = norad::Glyph::new("x");
+        g.contours.push(Contour::new(
+            vec![
+                point(0.0, 0.0, PointType::Line),
+                point(10.0, 0.0, PointType::Line),
+            ],
+            None,
+        ));
+        g.contours.push(Contour::new(
+            vec![
+                point(20.0, 0.0, PointType::Line),
+                point(30.0, 0.0, PointType::Line),
+            ],
+            None,
+        ));
+        let deltas = [(1, 0), (2, 0), (99, 99), (3, 0), (4, 0), (99, 99)];
+        let moved = apply_deltas(&g, &deltas, (0, 0));
+        let xs: Vec<f64> = moved
+            .iter()
+            .flat_map(|c| c.points.iter().map(|p| p.x))
+            .collect();
+        assert_eq!(xs, [1.0, 12.0, 23.0, 34.0]);
+    }
+
+    #[test]
+    fn a_proposal_is_a_layer_beside_the_foreground() {
+        let mut font = norad::Font::new();
+        let mut g = norad::Glyph::new("a");
+        g.width = 100.0;
+        font.default_layer_mut().insert_glyph(g.clone());
+        let proposed = proposed_glyph(&g, Vec::new(), 16);
+        let layer = write_proposal(&mut font, "bolden", [proposed]).unwrap();
+        assert_eq!(layer, "com.runebender.proposal.bolden");
+        assert_eq!(font.default_layer().get_glyph("a").unwrap().width, 100.0);
+        assert_eq!(
+            font.layers
+                .get(&layer)
+                .unwrap()
+                .get_glyph("a")
+                .unwrap()
+                .width,
+            116.0
+        );
     }
 
     #[test]

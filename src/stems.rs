@@ -350,6 +350,37 @@ mod narrowness_tests {
 ///
 /// The median across the pairs, so one odd reference cannot set the
 /// weight for the whole master.
+/// The height a lowercase stem is measured at: half the x-height,
+/// where a stem is a stem and not yet a join or a terminal. Falls
+/// back to a quarter of the em, then 256, on a source with no metrics.
+pub fn stem_height(font: &norad::Font) -> f64 {
+    font.font_info
+        .x_height
+        .map(|v| v / 2.0)
+        .or_else(|| font.font_info.units_per_em.map(|v| *v * 0.25))
+        .unwrap_or(256.0)
+}
+
+/// The reference glyphs a weight delta is learned from, in the order
+/// tried. Stems first, then bowls and the rest.
+pub const REFERENCE_GLYPHS: [&str; 11] = ["n", "o", "H", "O", "i", "l", "h", "m", "u", "I", "E"];
+
+/// How much heavier `there` is than `here`, learned from the
+/// reference glyphs drawn in both, with the height it was measured
+/// at. None when none of them is drawn in both yet.
+pub fn weight_delta(here: &norad::Font, there: &norad::Font) -> Option<(f64, f64)> {
+    let y = stem_height(there);
+    let pairs: Vec<(BezPath, BezPath)> = REFERENCE_GLYPHS
+        .iter()
+        .filter_map(|name| {
+            let a = crate::ufo::glyph_ops(here.get_glyph(name)?)?;
+            let b = crate::ufo::glyph_ops(there.get_glyph(name)?)?;
+            Some((ops_to_path(&a), ops_to_path(&b)))
+        })
+        .collect();
+    reference_delta(&pairs, y).map(|d| (d, y))
+}
+
 pub fn reference_delta(pairs: &[(BezPath, BezPath)], y: f64) -> Option<f64> {
     let deltas: Vec<f64> = pairs
         .iter()

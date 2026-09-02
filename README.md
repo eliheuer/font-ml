@@ -153,7 +153,26 @@ eight: 15/53 points moved, advance +4
 ```
 
 Add `--json` for the offsets themselves, one per point in the order
-the reader yields them.
+the reader yields them. `--all` runs every drawn glyph. `--reference
+Bold.ufo` names the other master: where it already says what weight
+it carries, each prediction is refitted to land there.
+
+### Writing a proposal
+
+Nothing above touches the font. `--write` puts the predictions into
+the source as a layer named `com.runebender.proposal.bolden`, next to
+the foreground, and saves:
+
+```sh
+font-ml run bolden --model runs/v09-pre \
+    --source VirtuaGrotesk-Regular.ufo --all \
+    --reference VirtuaGrotesk-Bold.ufo --write
+```
+
+An editor that knows the convention shows the layer and lets the
+designer install or discard it, one undo step per glyph. Runebender
+does, and `runebender-core proposal install` does it from a shell. Any
+other UFO tool sees an ordinary layer it can inspect or delete.
 
 ## Speed
 

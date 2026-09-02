@@ -90,15 +90,28 @@ enum Command {
         /// The model directory.
         #[arg(long)]
         model: PathBuf,
-        /// The UFO to read the glyph from.
+        /// The UFO to read glyphs from.
         #[arg(long)]
         source: Option<PathBuf>,
-        /// Which glyph to run on.
+        /// Which glyph to run on. Repeat for several.
         #[arg(long)]
-        glyph: Option<String>,
+        glyph: Vec<String>,
+        /// Every drawn glyph in the source.
+        #[arg(long)]
+        all: bool,
         /// Scale the predicted offsets. Above 1 boldens harder.
         #[arg(long, default_value = "1.0")]
         strength: f64,
+        /// The other master, part-drawn. Where it says what weight it
+        /// carries, each prediction is refitted to land there instead
+        /// of on --strength.
+        #[arg(long)]
+        reference: Option<PathBuf>,
+        /// Write the predictions into the source as a proposal layer
+        /// (`com.runebender.proposal.<task>`), leaving the foreground
+        /// alone. Without this, nothing is written.
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -111,15 +124,37 @@ fn main() -> ExitCode {
             tasks(cli.json);
             exit::OK
         }
-        Command::Eval { model, regular, bold, glyphs, limit, strength, fit_stems } => {
-            eval(&model, &regular, &bold, glyphs, limit, strength, fit_stems, cli.json)
-        }
-        Command::Run { task, model, source, glyph, strength } => run(
+        Command::Eval {
+            model,
+            regular,
+            bold,
+            glyphs,
+            limit,
+            strength,
+            fit_stems,
+        } => eval(
+            &model, &regular, &bold, glyphs, limit, strength, fit_stems, cli.json,
+        ),
+        Command::Run {
+            task,
+            model,
+            source,
+            glyph,
+            all,
+            strength,
+            reference,
+            write,
+        } => run(
             &task,
             &model,
             source.as_deref(),
-            glyph.as_deref(),
-            strength,
+            RunOptions {
+                glyphs: glyph,
+                all,
+                strength,
+                reference,
+                write,
+            },
             cli.json,
         ),
     };
@@ -206,7 +241,11 @@ fn describe(model: &PathBuf, json: bool) -> u8 {
         println!("  context     {} tokens", ckpt.config.max_len);
         println!("  tasks:");
         for t in supported {
-            let state = if t.implemented() { "ready" } else { "not built yet" };
+            let state = if t.implemented() {
+                "ready"
+            } else {
+                "not built yet"
+            };
             println!("    {:<10} {state}", t.as_str());
         }
     }
@@ -228,18 +267,34 @@ fn tasks(json: bool) {
         println!("{}", serde_json::json!({ "tasks": items }));
     } else {
         for t in Task::all() {
-            let state = if t.implemented() { "ready" } else { "not built yet" };
-            println!("{:<10} {state:<14} needs: {}", t.as_str(), t.inputs().join(", "));
+            let state = if t.implemented() {
+                "ready"
+            } else {
+                "not built yet"
+            };
+            println!(
+                "{:<10} {state:<14} needs: {}",
+                t.as_str(),
+                t.inputs().join(", ")
+            );
         }
     }
+}
+
+/// What a `run` was asked to do beyond the task and the model.
+struct RunOptions {
+    glyphs: Vec<String>,
+    all: bool,
+    strength: f64,
+    reference: Option<PathBuf>,
+    write: bool,
 }
 
 fn run(
     task: &str,
     model: &PathBuf,
     source: Option<&std::path::Path>,
-    glyph: Option<&str>,
-    strength: f64,
+    options: RunOptions,
     json: bool,
 ) -> u8 {
     let task: Task = match task.parse() {
@@ -261,37 +316,61 @@ fn run(
         );
     }
     match task {
-        Task::Bolden => bolden(&checkpoint, source, glyph, strength, json),
+        Task::Bolden => bolden(&checkpoint, source, &options, json),
         _ => fail(json, exit::FAILED, "a ready task with no runner"),
     }
+}
+
+/// One glyph's prediction, as reported.
+struct BoldenRow {
+    glyph: String,
+    points: usize,
+    moved: usize,
+    advance_delta: i32,
+    fitted: Option<f64>,
+    deltas: Vec<(i32, i32)>,
 }
 
 fn bolden(
     checkpoint: &Checkpoint,
     source: Option<&std::path::Path>,
-    glyph: Option<&str>,
-    strength: f64,
+    options: &RunOptions,
     json: bool,
 ) -> u8 {
-    let (Some(source), Some(name)) = (source, glyph) else {
-        return fail(json, exit::USAGE, "bolden needs --source and --glyph");
+    let Some(source) = source else {
+        return fail(json, exit::USAGE, "bolden needs --source");
     };
-    let font = match norad::Font::load(source) {
+    if options.glyphs.is_empty() && !options.all {
+        return fail(json, exit::USAGE, "bolden needs --glyph, or --all");
+    }
+    let mut font = match norad::Font::load(source) {
         Ok(f) => f,
         Err(e) => return fail(json, exit::USAGE, &format!("{source:?}: {e}")),
     };
-    let Ok(key) = norad::Name::new(name) else {
-        return fail(json, exit::USAGE, &format!("{name} is not a glyph name"));
+    let names: Vec<String> = if options.all {
+        font.default_layer()
+            .iter()
+            .filter(|g| font_ml::ufo::glyph_ops(g).is_some())
+            .map(|g| g.name().to_string())
+            .collect()
+    } else {
+        options.glyphs.clone()
     };
-    let Some(g) = font.default_layer().get_glyph(&key) else {
-        return fail(json, exit::USAGE, &format!("no glyph {name} in {source:?}"));
-    };
-    let Some(ops) = font_ml::ufo::glyph_ops(g) else {
-        return fail(
-            json,
-            exit::USAGE,
-            &format!("{name} has no outline to bolden; it may be a composite"),
-        );
+    for name in &names {
+        if norad::Name::new(name).is_err() {
+            return fail(json, exit::USAGE, &format!("{name} is not a glyph name"));
+        }
+        if font.default_layer().get_glyph(name.as_str()).is_none() {
+            return fail(json, exit::USAGE, &format!("no glyph {name} in {source:?}"));
+        }
+    }
+    // The other master, where it says what weight it already carries.
+    let reference = match &options.reference {
+        Some(path) => match norad::Font::load(path) {
+            Ok(other) => font_ml::stems::weight_delta(&font, &other),
+            Err(e) => return fail(json, exit::USAGE, &format!("{path:?}: {e}")),
+        },
+        None => None,
     };
 
     let model = match font_ml::outline::OutlineModel::load(checkpoint) {
@@ -303,44 +382,176 @@ fn bolden(
         .delta_center
         .map(|c| (c[0], c[1]))
         .unwrap_or((0, 0));
-    let unicode = g.codepoints.iter().next().map(|c| c as u32);
-    let result = match font_ml::bolden::bolden(
-        &model,
-        name,
-        unicode,
-        g.width,
-        &ops,
-        center,
-        checkpoint.config.trim_close,
-        strength,
-    ) {
-        Ok(r) => r,
-        Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+
+    let mut rows: Vec<BoldenRow> = Vec::new();
+    let mut proposed: Vec<norad::Glyph> = Vec::new();
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    for name in &names {
+        let g = font
+            .default_layer()
+            .get_glyph(name.as_str())
+            .expect("checked above");
+        let Some(ops) = font_ml::ufo::glyph_ops(g) else {
+            skipped.push((name.clone(), "no outline; a composite or empty".into()));
+            continue;
+        };
+        let unicode = g.codepoints.iter().next().map(|c| c as u32);
+        let predict = |strength: f64| {
+            font_ml::bolden::bolden(
+                &model,
+                name,
+                unicode,
+                g.width,
+                &ops,
+                center,
+                checkpoint.config.trim_close,
+                strength,
+            )
+        };
+        let mut result = match predict(options.strength) {
+            Ok(r) => r,
+            Err(e) => {
+                skipped.push((name.clone(), e.to_string()));
+                continue;
+            }
+        };
+        // The model is better at shape than at weight, so where the
+        // other master says what weight it carries, land there.
+        let mut fitted = None;
+        if let Some((delta, height)) = reference {
+            let from_path = font_ml::stems::ops_to_path(&result.from);
+            let want = font_ml::stems::target_from_delta(&from_path, delta, height)
+                .and_then(|target| {
+                    font_ml::stems::fit_strength(
+                        &from_path,
+                        &font_ml::stems::ops_to_path(&result.to),
+                        target,
+                        height,
+                    )
+                })
+                .filter(|s| s.is_finite() && *s > 0.25 && *s < 4.0);
+            if let Some(want) = want {
+                if let Ok(refit) = predict(want) {
+                    if refit.is_compatible() {
+                        result = refit;
+                        fitted = Some(want);
+                    }
+                }
+            }
+        }
+        // The encoding guarantees this; check it before writing to a
+        // font rather than take it on trust.
+        let expected: usize = g.contours.iter().map(|c| c.points.len() + 1).sum();
+        if !result.is_compatible() || result.deltas.len() != expected {
+            skipped.push((
+                name.clone(),
+                format!(
+                    "the prediction changed the point structure ({} offsets for {expected} points)",
+                    result.deltas.len()
+                ),
+            ));
+            continue;
+        }
+        let moved = result
+            .deltas
+            .iter()
+            .filter(|(x, y)| *x != 0 || *y != 0)
+            .count();
+        if options.write {
+            let contours = font_ml::ufo::apply_deltas(g, &result.deltas, center);
+            proposed.push(font_ml::ufo::proposed_glyph(
+                g,
+                contours,
+                result.advance_delta,
+            ));
+        }
+        rows.push(BoldenRow {
+            glyph: name.clone(),
+            points: result.deltas.len(),
+            moved,
+            advance_delta: result.advance_delta,
+            fitted,
+            deltas: result.deltas,
+        });
+    }
+
+    let layer = if options.write && !proposed.is_empty() {
+        let layer = match font_ml::ufo::write_proposal(&mut font, "bolden", proposed) {
+            Ok(l) => l,
+            Err(e) => return fail(json, exit::FAILED, &format!("proposal layer: {e}")),
+        };
+        if let Err(e) = font.save(source) {
+            return fail(json, exit::FAILED, &format!("{source:?}: {e}"));
+        }
+        Some(layer)
+    } else {
+        None
     };
 
-    let moved = result
-        .deltas
-        .iter()
-        .filter(|(x, y)| *x != 0 || *y != 0)
-        .count();
+    if rows.is_empty() {
+        let why = skipped
+            .first()
+            .map(|(n, w)| format!("{n}: {w}"))
+            .unwrap_or_else(|| "nothing to bolden".into());
+        return fail(json, exit::FAILED, &why);
+    }
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "glyph": name,
-                "points": result.deltas.len(),
-                "moved": moved,
-                "advance_delta": result.advance_delta,
-                "compatible": result.is_compatible(),
-                "deltas": result.deltas,
+        // One glyph keeps the old flat shape, so a caller that read
+        // `deltas` at the top level still can.
+        let one = rows.len() == 1 && !options.all;
+        let glyphs: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "glyph": r.glyph,
+                    "points": r.points,
+                    "moved": r.moved,
+                    "advance_delta": r.advance_delta,
+                    "compatible": true,
+                    "fitted_strength": r.fitted,
+                    "deltas": if one { serde_json::json!(r.deltas) } else { serde_json::Value::Null },
+                })
             })
-        );
+            .collect();
+        let mut out = serde_json::json!({
+            "ok": true,
+            "task": "bolden",
+            "glyphs": glyphs,
+            "skipped": skipped,
+            "proposal": layer.as_ref().map(|l| serde_json::json!({
+                "layer": l, "glyphs": rows.len(), "source": source,
+            })),
+        });
+        if one {
+            let r = &rows[0];
+            out["glyph"] = serde_json::json!(r.glyph);
+            out["points"] = serde_json::json!(r.points);
+            out["moved"] = serde_json::json!(r.moved);
+            out["advance_delta"] = serde_json::json!(r.advance_delta);
+            out["compatible"] = serde_json::json!(true);
+            out["deltas"] = serde_json::json!(r.deltas);
+        }
+        println!("{out}");
     } else {
-        println!(
-            "{name}: {moved}/{} points moved, advance {:+}",
-            result.deltas.len(),
-            result.advance_delta
-        );
+        for r in &rows {
+            println!(
+                "{}: {}/{} points moved, advance {:+}{}",
+                r.glyph,
+                r.moved,
+                r.points,
+                r.advance_delta,
+                match r.fitted {
+                    Some(s) => format!(", fitted to {s:.2}x"),
+                    None => String::new(),
+                }
+            );
+        }
+        for (name, why) in &skipped {
+            println!("{name}: skipped, {why}");
+        }
+        if let Some(layer) = &layer {
+            println!("{} glyphs proposed in layer {layer}", rows.len());
+        }
     }
     exit::OK
 }
@@ -359,8 +570,7 @@ fn eval(
         Ok(c) => c,
         Err(e) => return fail(json, exit::USAGE, &e.to_string()),
     };
-    let (Ok(reg_font), Ok(bold_font)) =
-        (norad::Font::load(regular), norad::Font::load(bold))
+    let (Ok(reg_font), Ok(bold_font)) = (norad::Font::load(regular), norad::Font::load(bold))
     else {
         return fail(json, exit::USAGE, "could not load both masters");
     };
@@ -422,7 +632,9 @@ fn eval(
         if scores.len() >= limit {
             break;
         }
-        let Ok(key) = norad::Name::new(&name) else { continue };
+        let Ok(key) = norad::Name::new(&name) else {
+            continue;
+        };
         let (Some(rg), Some(bg)) = (
             reg_font.default_layer().get_glyph(&key),
             bold_font.default_layer().get_glyph(&key),
@@ -435,9 +647,7 @@ fn eval(
             continue;
         };
         // Only comparable when the masters already agree structurally.
-        if font_ml::eval::points(&reg_ops).len()
-            != font_ml::eval::points(&bold_ops).len()
-        {
+        if font_ml::eval::points(&reg_ops).len() != font_ml::eval::points(&bold_ops).len() {
             continue;
         }
         let unicode = rg.codepoints.iter().next().map(|c| c as u32);
@@ -458,8 +668,7 @@ fn eval(
         let result = if fit_stems {
             let from_path = font_ml::stems::ops_to_path(&result.from);
             let fitted = reference.and_then(|delta| {
-                let target =
-                    font_ml::stems::target_from_delta(&from_path, delta, stem_height)?;
+                let target = font_ml::stems::target_from_delta(&from_path, delta, stem_height)?;
                 font_ml::stems::fit_strength(
                     &from_path,
                     &font_ml::stems::ops_to_path(&result.to),
@@ -493,9 +702,7 @@ fn eval(
         ));
         // Half the x-height is where a lowercase stem is a stem and
         // not yet a join or a terminal.
-        if let Some((p, a)) =
-            font_ml::eval::stem_comparison(&result.to, &bold_ops, stem_height)
-        {
+        if let Some((p, a)) = font_ml::eval::stem_comparison(&result.to, &bold_ops, stem_height) {
             stems.push((name.clone(), p, a));
         }
     }
@@ -510,7 +717,10 @@ fn eval(
     } else {
         Some(stems.iter().map(|(_, p, a)| (p - a).abs()).sum::<f64>() / stems.len() as f64)
     };
-    let stem_ok = stems.iter().filter(|(_, p, a)| (p - a).abs() <= 4.0).count();
+    let stem_ok = stems
+        .iter()
+        .filter(|(_, p, a)| (p - a).abs() <= 4.0)
+        .count();
     let mean = |f: fn(&font_ml::eval::Score) -> f64| -> f64 {
         scores.iter().map(f).sum::<f64>() / scores.len() as f64
     };
