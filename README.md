@@ -42,6 +42,11 @@ person.
   the model's shape and its tasks with an `implemented` flag and the
   inputs each one needs. A caller finds out what is possible instead of
   guessing and parsing an error message.
+- **Typed task specs**: `font-ml tasks --json` prints every task with
+  its title, help, typed inputs (source, model, glyph, number, flag)
+  and outputs (a proposal layer, rows), plus the JSON Schema for the
+  spec. An editor or a node graph builds its controls from this list
+  and carries no task names of its own.
 - **Stable exit codes**: `0` fine, `2` the request did not make sense,
   `3` it made sense and is not built yet, `4` it failed. "Not built
   yet" and "you asked wrongly" are different answers and should not

@@ -254,17 +254,15 @@ fn describe(model: &PathBuf, json: bool) -> u8 {
 
 fn tasks(json: bool) {
     if json {
-        let items: Vec<_> = Task::all()
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "name": t.as_str(),
-                    "implemented": t.implemented(),
-                    "inputs": t.inputs(),
-                })
+        // The list and its schema together, so a caller can check
+        // what it parsed against what was meant.
+        println!(
+            "{}",
+            serde_json::json!({
+                "tasks": Task::specs(),
+                "schema": schemars::schema_for!(font_ml::task::Spec),
             })
-            .collect();
-        println!("{}", serde_json::json!({ "tasks": items }));
+        );
     } else {
         for t in Task::all() {
             let state = if t.implemented() {

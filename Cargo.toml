@@ -23,6 +23,9 @@ kurbo = "0.13"
 norad = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The task list is a published contract: every type a caller reads back
+# carries a JSON Schema.
+schemars = "1.2"
 thiserror = "2"
 
 [features]
