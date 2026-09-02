@@ -343,6 +343,16 @@ impl Task {
     }
 }
 
+/// A progress line as `font-ml run` prints it on stderr during a
+/// long run: `progress <done>/<total> <glyph>`. Returns
+/// `(done, total, glyph)`, or None for any other line.
+pub fn parse_progress(line: &str) -> Option<(usize, usize, &str)> {
+    let rest = line.strip_prefix("progress ")?;
+    let (count, glyph) = rest.split_once(' ')?;
+    let (done, total) = count.split_once('/')?;
+    Some((done.parse().ok()?, total.parse().ok()?, glyph.trim()))
+}
+
 impl std::fmt::Display for Task {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -416,6 +426,14 @@ mod tests {
         let back: Spec = serde_json::from_str(&json).unwrap();
         assert_eq!(back, spec);
         assert!(json.contains("\"kind\":\"layer\""));
+    }
+
+    #[test]
+    fn progress_lines_parse_and_others_do_not() {
+        assert_eq!(parse_progress("progress 12/397 H"), Some((12, 397, "H")));
+        assert_eq!(parse_progress("progress 1/1 a.sc\n"), Some((1, 1, "a.sc")));
+        assert_eq!(parse_progress("H: 25/25 points moved"), None);
+        assert_eq!(parse_progress("progress x/y H"), None);
     }
 
     #[test]

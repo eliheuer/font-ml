@@ -112,6 +112,9 @@ enum Command {
         /// alone. Without this, nothing is written.
         #[arg(long)]
         write: bool,
+        /// No progress lines on stderr.
+        #[arg(long)]
+        quiet: bool,
     },
 }
 
@@ -144,6 +147,7 @@ fn main() -> ExitCode {
             strength,
             reference,
             write,
+            quiet,
         } => run(
             &task,
             &model,
@@ -154,6 +158,7 @@ fn main() -> ExitCode {
                 strength,
                 reference,
                 write,
+                quiet,
             },
             cli.json,
         ),
@@ -286,6 +291,16 @@ struct RunOptions {
     strength: f64,
     reference: Option<PathBuf>,
     write: bool,
+    quiet: bool,
+}
+
+/// One line per glyph on stderr while a long run works, so a caller
+/// that piped stderr can show a count and a person can see it move.
+/// The shape is fixed: `progress <done>/<total> <glyph>`.
+fn progress(quiet: bool, done: usize, total: usize, glyph: &str) {
+    if !quiet && total > 1 {
+        eprintln!("progress {done}/{total} {glyph}");
+    }
 }
 
 fn run(
@@ -384,7 +399,9 @@ fn bolden(
     let mut rows: Vec<BoldenRow> = Vec::new();
     let mut proposed: Vec<norad::Glyph> = Vec::new();
     let mut skipped: Vec<(String, String)> = Vec::new();
-    for name in &names {
+    let total = names.len();
+    for (done, name) in names.iter().enumerate() {
+        progress(options.quiet, done + 1, total, name);
         let g = font
             .default_layer()
             .get_glyph(name.as_str())
