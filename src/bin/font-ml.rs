@@ -117,6 +117,22 @@ enum Command {
         #[arg(long)]
         bench: Option<usize>,
     },
+    /// Serve the chat model as an OpenAI-compatible endpoint on the
+    /// loopback interface, for a harness outside the editor.
+    Serve {
+        /// A directory holding a .gguf and tokenizer.json, or the .gguf.
+        #[arg(long)]
+        model: PathBuf,
+        /// Where to listen.
+        #[arg(long, default_value = "127.0.0.1:8790")]
+        bind: String,
+        /// Run on the CPU even when a GPU feature is built in.
+        #[arg(long)]
+        cpu: bool,
+        /// Tokens per reply at most, unless the request says.
+        #[arg(long, default_value = "1024")]
+        max_tokens: usize,
+    },
     /// Run a task.
     Run {
         /// Task name, as listed by `tasks`.
@@ -208,6 +224,30 @@ fn main() -> ExitCode {
         Command::Tasks => {
             tasks(cli.json);
             exit::OK
+        }
+        Command::Serve {
+            model,
+            bind,
+            cpu,
+            max_tokens,
+        } => {
+            use font_ml::chat;
+            let device = match chat::device(cpu) {
+                Ok(d) => d,
+                Err(e) => return ExitCode::from(fail(cli.json, exit::FAILED, &e.to_string())),
+            };
+            let mut chat_model = match chat::ChatModel::load(&model, device) {
+                Ok(m) => m,
+                Err(e) => return ExitCode::from(fail(cli.json, exit::USAGE, &e.to_string())),
+            };
+            let options = chat::Options {
+                max_tokens,
+                ..Default::default()
+            };
+            match font_ml::serve::serve(&mut chat_model, &bind, &options) {
+                Ok(()) => exit::OK,
+                Err(e) => fail(cli.json, exit::FAILED, &e.to_string()),
+            }
         }
         Command::Chat {
             model,

@@ -42,6 +42,7 @@ pub mod checkpoint;
 pub mod error;
 pub mod eval;
 pub mod outline;
+pub mod serve;
 pub mod stems;
 pub mod task;
 pub mod tokenizer;
