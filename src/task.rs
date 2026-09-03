@@ -101,6 +101,8 @@ pub enum Kind {
     Source,
     /// A model directory on disk.
     Model,
+    /// An adapter directory on disk, applied over a model.
+    Adapter,
     /// One glyph name from the source.
     Glyph,
     /// Zero or more glyph names, or every drawn glyph.
@@ -242,6 +244,13 @@ impl Task {
                         false,
                         None,
                         "The other master; predictions are refitted to the weight it carries.",
+                    ),
+                    input(
+                        "adapter",
+                        Kind::Adapter,
+                        false,
+                        None,
+                        "An adapter directory, with :strength after it. Repeatable; each adds.",
                     ),
                     input(
                         "write",

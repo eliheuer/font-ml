@@ -84,6 +84,13 @@ pub struct TrainConfig {
     pub max_len: usize,
     /// Seed for the split and the sampler.
     pub seed: u64,
+    /// Train an adapter over `init` into this directory instead of a
+    /// whole model. The base stays frozen.
+    pub adapter_out: Option<PathBuf>,
+    /// The adapter's rank.
+    pub rank: usize,
+    /// The adapter's alpha; the update is `alpha / rank` times `B·A`.
+    pub alpha: f64,
 }
 
 impl Default for TrainConfig {
@@ -103,6 +110,9 @@ impl Default for TrainConfig {
             colors: vec!["green".into()],
             max_len: 0,
             seed: 7,
+            adapter_out: None,
+            rank: 8,
+            alpha: 16.0,
         }
     }
 }
@@ -797,25 +807,82 @@ pub fn train(
 
     let device = Device::Cpu;
     let mut varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let model = OutlineModel::build(
-        vb,
-        &model_cfg,
-        corpus.vocab.clone(),
-        device.clone(),
-        cfg.dropout,
-    )?;
-    if let Some(c) = &init_ckpt {
-        varmap.load(c.weights_path())?;
-    }
+    let adapter = cfg.adapter_out.as_deref();
+    let model = match (adapter, &init_ckpt) {
+        (Some(_), None) => {
+            return Err(Error::Io {
+                path: out.to_path_buf(),
+                source: std::io::Error::other("an adapter trains over a base: pass --init"),
+            });
+        }
+        (Some(_), Some(base)) => {
+            // The base is read as plain tensors, so nothing in it
+            // learns; the adapter's matrices are the only variables.
+            let base_vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&[base.weights_path()], DType::F32, &device)?
+            };
+            let mut model = OutlineModel::build(
+                base_vb,
+                &model_cfg,
+                corpus.vocab.clone(),
+                device.clone(),
+                cfg.dropout,
+            )?;
+            let lora_vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+            model.attach_lora(&lora_vb, cfg.rank, cfg.alpha, model_cfg.dims)?;
+            model
+        }
+        (None, _) => {
+            let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+            let model = OutlineModel::build(
+                vb,
+                &model_cfg,
+                corpus.vocab.clone(),
+                device.clone(),
+                cfg.dropout,
+            )?;
+            if let Some(c) = &init_ckpt {
+                varmap.load(c.weights_path())?;
+            }
+            model
+        }
+    };
     let params: usize = varmap.all_vars().iter().map(|v| v.elem_count()).sum();
 
+    // The directory written: the model's, or the adapter's.
+    let out = adapter.unwrap_or(out);
     std::fs::create_dir_all(out).map_err(|source| Error::Io {
         path: out.to_path_buf(),
         source,
     })?;
-    write_vocab(out, &corpus.vocab)?;
-    write_json(&out.join("config.json"), &model_cfg)?;
+    let weights_file = if adapter.is_some() {
+        "adapter.safetensors"
+    } else {
+        "weights.safetensors"
+    };
+    if let Some(base) = init_ckpt.as_ref().filter(|_| adapter.is_some()) {
+        write_json(
+            &out.join("adapter.json"),
+            &crate::adapter::AdapterConfig {
+                rank: cfg.rank,
+                alpha: cfg.alpha,
+                base: base
+                    .dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                targets: crate::adapter::TARGETS
+                    .iter()
+                    .map(|t| (*t).to_string())
+                    .collect(),
+                layers: model_cfg.layers,
+            },
+        )?;
+    } else {
+        write_vocab(out, &corpus.vocab)?;
+        write_json(&out.join("config.json"), &model_cfg)?;
+    }
 
     let mut opt = candle_nn::AdamW::new(
         varmap.all_vars(),
@@ -849,7 +916,7 @@ pub fn train(
         let mut note = format!("checkpoint {tag}: val loss {v:.4}");
         if v < *best {
             *best = v;
-            varmap.save(out.join("weights.safetensors"))?;
+            varmap.save(out.join(weights_file))?;
             note.push_str(" (best, saved)");
         }
         eprintln!("{note}");
@@ -907,6 +974,7 @@ pub fn train(
         &serde_json::json!({
             "name": name,
             "task": "bolden",
+            "kind": if adapter.is_some() { "adapter" } else { "model" },
             "trained": today(),
             "base": base,
             "target": target,

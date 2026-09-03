@@ -13,6 +13,7 @@ use candle_nn::{
     LayerNorm, Linear, Module, VarBuilder,
 };
 
+use crate::adapter::{Adapter, Lora};
 use crate::checkpoint::{Checkpoint, ModelConfig, ModelKind};
 use crate::error::Result;
 use crate::tokenizer::Vocab;
@@ -29,6 +30,9 @@ struct Block {
     heads: usize,
     /// Only acts while training; inference passes `train = false`.
     drop: Dropout,
+    /// Trainable adapters on q, k, v, out, when an adapter is being
+    /// trained. Applied ones are merged into the weights instead.
+    lora: [Option<Lora>; 4],
 }
 
 impl Block {
@@ -46,7 +50,23 @@ impl Block {
             fc2: linear(4 * dims, dims, vb.pp("mlp.layers.2"))?,
             heads,
             drop: Dropout::new(dropout as f32),
+            lora: [None, None, None, None],
         })
+    }
+
+    /// A projection, plus its adapter when training one.
+    fn proj(&self, which: usize, x: &Tensor) -> Result<Tensor> {
+        let linear = match which {
+            0 => &self.q,
+            1 => &self.k,
+            2 => &self.v,
+            _ => &self.out,
+        };
+        let y = linear.forward(x)?;
+        match &self.lora[which] {
+            Some(l) => Ok((y + l.apply(x)?)?),
+            None => Ok(y),
+        }
     }
 
     /// The same block over a batch: `x` is `(batch, seq, dims)`.
@@ -59,9 +79,9 @@ impl Block {
                 .transpose(1, 2)?
                 .contiguous()?)
         };
-        let q = split(self.q.forward(&h)?)?;
-        let k = split(self.k.forward(&h)?)?;
-        let v = split(self.v.forward(&h)?)?;
+        let q = split(self.proj(0, &h)?)?;
+        let k = split(self.proj(1, &h)?)?;
+        let v = split(self.proj(2, &h)?)?;
         let scale = 1.0 / (head_dim as f64).sqrt();
         let scores = (q.matmul(&k.transpose(2, 3)?)? * scale)?;
         let scores = scores.broadcast_add(mask)?;
@@ -71,7 +91,7 @@ impl Block {
             .transpose(1, 2)?
             .reshape((b, seq, dims))?
             .contiguous()?;
-        let x = (x + self.drop.forward(&self.out.forward(&context)?, train)?)?;
+        let x = (x + self.drop.forward(&self.proj(3, &context)?, train)?)?;
         let h = self.norm2.forward(&x)?;
         let h = self.fc2.forward(&self.fc1.forward(&h)?.gelu_erf()?)?;
         Ok((x + self.drop.forward(&h, train)?)?)
@@ -87,9 +107,9 @@ impl Block {
                 .transpose(0, 1)?
                 .contiguous()?)
         };
-        let q = split(self.q.forward(&h)?)?;
-        let k = split(self.k.forward(&h)?)?;
-        let v = split(self.v.forward(&h)?)?;
+        let q = split(self.proj(0, &h)?)?;
+        let k = split(self.proj(1, &h)?)?;
+        let v = split(self.proj(2, &h)?)?;
 
         let scale = 1.0 / (head_dim as f64).sqrt();
         let scores = (q.matmul(&k.transpose(1, 2)?)? * scale)?;
@@ -100,7 +120,7 @@ impl Block {
             .transpose(0, 1)?
             .reshape((seq, dims))?
             .contiguous()?;
-        let x = (x + self.out.forward(&context)?)?;
+        let x = (x + self.proj(3, &context)?)?;
 
         let h = self.norm2.forward(&x)?;
         let h = self.fc2.forward(&self.fc1.forward(&h)?.gelu_erf()?)?;
@@ -130,6 +150,58 @@ impl OutlineModel {
         };
         let vocab = Vocab::new(checkpoint.glyph_names.clone(), checkpoint.unicodes.clone());
         Self::build(vb, &checkpoint.config, vocab, device, 0.0)
+    }
+
+    /// Load the weights with adapters merged in, each at a strength.
+    /// The order is the order given; each adds to what is there.
+    pub fn load_with_adapters(
+        checkpoint: &Checkpoint,
+        adapters: &[(Adapter, f64)],
+    ) -> Result<Self> {
+        if adapters.is_empty() {
+            return Self::load(checkpoint);
+        }
+        checkpoint.require(ModelKind::Outline)?;
+        let device = Device::Cpu;
+        let mut weights = candle_core::safetensors::load(checkpoint.weights_path(), &device)?;
+        for (adapter, strength) in adapters {
+            adapter.merge_into(&mut weights, *strength, &device)?;
+        }
+        let vb = VarBuilder::from_tensors(weights, DType::F32, &device);
+        let vocab = Vocab::new(checkpoint.glyph_names.clone(), checkpoint.unicodes.clone());
+        Self::build(vb, &checkpoint.config, vocab, device, 0.0)
+    }
+
+    /// Attaches trainable adapters to every block's projections, from
+    /// a variable source of the adapter's own. Base weights stay as
+    /// they were loaded, so only the adapter learns.
+    pub fn attach_lora(
+        &mut self,
+        vb: &VarBuilder,
+        rank: usize,
+        alpha: f64,
+        dims: usize,
+    ) -> Result<()> {
+        use candle_nn::Init;
+        let scale = alpha / rank.max(1) as f64;
+        for (i, block) in self.blocks.iter_mut().enumerate() {
+            for (which, target) in crate::adapter::TARGETS.iter().enumerate() {
+                let stem = vb.pp(format!("blocks.{i}.attn.{target}"));
+                // A starts small and random, B at zero, so the model
+                // begins exactly where the base is.
+                let a = stem.get_with_hints(
+                    (rank, dims),
+                    "lora_a",
+                    Init::Uniform {
+                        lo: -1.0 / (dims as f64).sqrt(),
+                        up: 1.0 / (dims as f64).sqrt(),
+                    },
+                )?;
+                let b = stem.get_with_hints((dims, rank), "lora_b", Init::Const(0.0))?;
+                block.lora[which] = Some(Lora { a, b, scale });
+            }
+        }
+        Ok(())
     }
 
     /// Build the model over any variable source: a checkpoint on disk,

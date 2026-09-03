@@ -35,6 +35,7 @@
 //! and, for outline models, `vocab.txt`. Nothing is downloaded and
 //! nothing phones home: you point at a folder and it loads.
 
+pub mod adapter;
 pub mod bolden;
 pub mod checkpoint;
 pub mod error;

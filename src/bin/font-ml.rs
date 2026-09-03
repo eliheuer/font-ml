@@ -82,6 +82,9 @@ enum Command {
         /// heavier master already carries, instead of using --strength.
         #[arg(long)]
         fit_stems: bool,
+        /// An adapter directory, with `:strength` after it. Repeatable.
+        #[arg(long)]
+        adapter: Vec<String>,
     },
     /// Run a task.
     Run {
@@ -115,6 +118,17 @@ enum Command {
         /// No progress lines on stderr.
         #[arg(long)]
         quiet: bool,
+        /// An adapter directory, with `:strength` after it. Repeat to
+        /// stack; each adds to the weights in the order given.
+        #[arg(long)]
+        adapter: Vec<String>,
+        /// train: write an adapter over --init into this directory
+        /// instead of a whole model.
+        #[arg(long)]
+        adapter_out: Option<PathBuf>,
+        /// train: the adapter's rank.
+        #[arg(long, default_value = "8")]
+        rank: usize,
         /// train: the heavier master.
         #[arg(long)]
         target: Option<PathBuf>,
@@ -172,8 +186,9 @@ fn main() -> ExitCode {
             limit,
             strength,
             fit_stems,
+            adapter,
         } => eval(
-            &model, &regular, &bold, glyphs, limit, strength, fit_stems, cli.json,
+            &model, &regular, &bold, glyphs, limit, strength, fit_stems, &adapter, cli.json,
         ),
         Command::Run {
             task,
@@ -191,6 +206,8 @@ fn main() -> ExitCode {
             colors,
             recenter,
             init,
+            adapter_out,
+            rank,
             ..
         } if task == "train" => train_cmd(
             source.as_deref(),
@@ -206,6 +223,8 @@ fn main() -> ExitCode {
                 lr,
                 recenter,
                 colors,
+                adapter_out,
+                rank,
                 ..Default::default()
             },
             init.as_deref(),
@@ -222,6 +241,7 @@ fn main() -> ExitCode {
             reference,
             write,
             quiet,
+            adapter,
             ..
         } => run(
             &task,
@@ -234,6 +254,7 @@ fn main() -> ExitCode {
                 reference,
                 write,
                 quiet,
+                adapters: adapter,
             },
             cli.json,
         ),
@@ -367,6 +388,25 @@ struct RunOptions {
     reference: Option<PathBuf>,
     write: bool,
     quiet: bool,
+    adapters: Vec<String>,
+}
+
+/// `dir[:strength]` as an adapter to apply.
+fn parse_adapters(specs: &[String]) -> Result<Vec<(font_ml::adapter::Adapter, f64)>, String> {
+    specs
+        .iter()
+        .map(|spec| {
+            let (dir, strength) = match spec.rsplit_once(':') {
+                Some((d, s)) if !d.is_empty() && s.parse::<f64>().is_ok() => {
+                    (d, s.parse::<f64>().unwrap_or(1.0))
+                }
+                _ => (spec.as_str(), 1.0),
+            };
+            font_ml::adapter::Adapter::open(dir)
+                .map(|a| (a, strength))
+                .map_err(|e| e.to_string())
+        })
+        .collect()
 }
 
 /// One line per glyph on stderr while a long run works, so a caller
@@ -438,12 +478,14 @@ fn train_cmd(
     };
     match font_ml::train::train(source, target, out, &cfg, init, &mut on_progress) {
         Ok(report) => {
+            let is_adapter = cfg.adapter_out.is_some();
             if json {
                 println!(
                     "{}",
                     serde_json::json!({
                         "ok": true,
-                        "model": report.out,
+                        "model": if is_adapter { None } else { Some(&report.out) },
+                        "adapter": if is_adapter { Some(&report.out) } else { None },
                         "steps": report.steps,
                         "best_val_loss": report.best_val,
                         "init_loss": report.init_loss,
@@ -524,7 +566,11 @@ fn bolden(
         None => None,
     };
 
-    let model = match font_ml::outline::OutlineModel::load(checkpoint) {
+    let adapters = match parse_adapters(&options.adapters) {
+        Ok(a) => a,
+        Err(e) => return fail(json, exit::USAGE, &e),
+    };
+    let model = match font_ml::outline::OutlineModel::load_with_adapters(checkpoint, &adapters) {
         Ok(m) => m,
         Err(e) => return fail(json, exit::FAILED, &e.to_string()),
     };
@@ -717,6 +763,7 @@ fn eval(
     limit: usize,
     strength: f64,
     fit_stems: bool,
+    adapter_specs: &[String],
     json: bool,
 ) -> u8 {
     let checkpoint = match Checkpoint::open(model_dir) {
@@ -727,7 +774,11 @@ fn eval(
     else {
         return fail(json, exit::USAGE, "could not load both masters");
     };
-    let model = match font_ml::outline::OutlineModel::load(&checkpoint) {
+    let adapters = match parse_adapters(adapter_specs) {
+        Ok(a) => a,
+        Err(e) => return fail(json, exit::USAGE, &e),
+    };
+    let model = match font_ml::outline::OutlineModel::load_with_adapters(&checkpoint, &adapters) {
         Ok(m) => m,
         Err(e) => return fail(json, exit::FAILED, &e.to_string()),
     };

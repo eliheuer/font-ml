@@ -201,6 +201,13 @@ is a model like any other here: `config.json`, `weights.safetensors`,
 shape. `--minutes` stops a run on a clock. Progress lines are
 `progress <step>/<steps> loss <value>`.
 
+An adapter is a small trained delta over a base model, the shape of
+a LoRA: two thin matrices per attention projection, trained with the
+base frozen. `--init <base> --adapter-out <dir> --rank 8` trains one;
+`--adapter <dir>:<strength>` on `run bolden` or `eval` applies it,
+merged into the weights at load, and two in a row both take. An
+adapter directory holds `adapter.json` and `adapter.safetensors`.
+
 The lab's OFL pretraining and sketch corpora are not ported.
 
 ## Speed
