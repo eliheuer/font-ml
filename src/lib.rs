@@ -37,6 +37,7 @@
 
 pub mod adapter;
 pub mod bolden;
+pub mod chat;
 pub mod checkpoint;
 pub mod error;
 pub mod eval;

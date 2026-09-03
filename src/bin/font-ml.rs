@@ -86,6 +86,37 @@ enum Command {
         #[arg(long)]
         adapter: Vec<String>,
     },
+    /// Talk to a local chat model about the open font. The model can
+    /// only read, proof and propose; nothing it does edits the font.
+    Chat {
+        /// A directory holding a .gguf and tokenizer.json, or the .gguf.
+        #[arg(long)]
+        model: PathBuf,
+        /// The designspace or UFO to work on.
+        #[arg(long)]
+        font: Option<PathBuf>,
+        /// One user message. Without it, the conversation is read as
+        /// JSON from stdin: `[{"role": "user", "content": "..."}]`.
+        #[arg(long)]
+        prompt: Option<String>,
+        /// The runebender-core binary. Defaults to `$RUNEBENDER_CORE`,
+        /// then PATH.
+        #[arg(long)]
+        core: Option<PathBuf>,
+        /// Run on the CPU even when a GPU feature is built in.
+        #[arg(long)]
+        cpu: bool,
+        /// Tokens per reply at most.
+        #[arg(long, default_value = "1024")]
+        max_tokens: usize,
+        /// Tool calls per turn at most.
+        #[arg(long, default_value = "6")]
+        max_calls: usize,
+        /// Generate this many tokens from a fixed prompt and print the
+        /// speed instead of talking.
+        #[arg(long)]
+        bench: Option<usize>,
+    },
     /// Run a task.
     Run {
         /// Task name, as listed by `tasks`.
@@ -178,6 +209,26 @@ fn main() -> ExitCode {
             tasks(cli.json);
             exit::OK
         }
+        Command::Chat {
+            model,
+            font,
+            prompt,
+            core,
+            cpu,
+            max_tokens,
+            max_calls,
+            bench,
+        } => chat(
+            &model,
+            font.as_deref(),
+            prompt.as_deref(),
+            core.as_deref(),
+            cpu,
+            max_tokens,
+            max_calls,
+            bench,
+            cli.json,
+        ),
         Command::Eval {
             model,
             regular,
@@ -449,6 +500,119 @@ fn run(
     match task {
         Task::Bolden => bolden(&checkpoint, source, &options, json),
         _ => fail(json, exit::FAILED, "a ready task with no runner"),
+    }
+}
+
+/// `chat`: one assistant turn over the font, events as JSON lines.
+#[allow(clippy::too_many_arguments)]
+fn chat(
+    model: &std::path::Path,
+    font: Option<&std::path::Path>,
+    prompt: Option<&str>,
+    core: Option<&std::path::Path>,
+    cpu: bool,
+    max_tokens: usize,
+    max_calls: usize,
+    bench: Option<usize>,
+    json: bool,
+) -> u8 {
+    use font_ml::chat;
+    let device = match chat::device(cpu) {
+        Ok(d) => d,
+        Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+    };
+    let started = std::time::Instant::now();
+    let mut chat_model = match chat::ChatModel::load(model, device.clone()) {
+        Ok(m) => m,
+        Err(e) => return fail(json, exit::USAGE, &e.to_string()),
+    };
+    let load_seconds = started.elapsed().as_secs_f64();
+    let device_name = if device.is_metal() {
+        "metal"
+    } else if device.is_cuda() {
+        "cuda"
+    } else {
+        "cpu"
+    };
+    if let Some(n) = bench {
+        return match chat::bench(&mut chat_model, n) {
+            Ok((tokens, seconds)) => {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": true, "model": model, "device": device_name,
+                        "load_seconds": load_seconds, "tokens": tokens,
+                        "seconds": seconds, "tokens_per_second": tokens as f64 / seconds.max(1e-9),
+                    })
+                );
+                exit::OK
+            }
+            Err(e) => fail(json, exit::FAILED, &e.to_string()),
+        };
+    }
+    let Some(font) = font else {
+        return fail(json, exit::USAGE, "--font is required to chat");
+    };
+    let Some(core) = chat::find_core(core) else {
+        return fail(
+            json,
+            exit::USAGE,
+            "runebender-core not found: set RUNEBENDER_CORE, pass --core, or put it on PATH",
+        );
+    };
+    let (system, _tools) = match chat::harness(&core) {
+        Ok(h) => h,
+        Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+    };
+    let messages: Vec<chat::Message> = match prompt {
+        Some(p) => vec![chat::Message {
+            role: "user".into(),
+            content: p.to_string(),
+        }],
+        None => {
+            let mut text = String::new();
+            if std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).is_err() {
+                return fail(
+                    json,
+                    exit::USAGE,
+                    "could not read the conversation from stdin",
+                );
+            }
+            match serde_json::from_str(&text) {
+                Ok(m) => m,
+                Err(e) => return fail(json, exit::USAGE, &format!("conversation: {e}")),
+            }
+        }
+    };
+    let options = chat::Options {
+        max_tokens,
+        max_calls,
+        ..Default::default()
+    };
+    let mut emit = |event: serde_json::Value| {
+        println!("{event}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    };
+    emit(serde_json::json!({ "event": "loaded", "device": device_name, "seconds": load_seconds }));
+    match chat::turn(
+        &mut chat_model,
+        &core,
+        font,
+        &system,
+        &messages,
+        &options,
+        &mut emit,
+    ) {
+        Ok(report) => {
+            // The whole conversation last, so a caller can send it back
+            // for the next turn.
+            println!(
+                "{}",
+                serde_json::json!({ "event": "messages", "messages": report.messages })
+            );
+            exit::OK
+        }
+        Err(e) => fail(json, exit::FAILED, &e.to_string()),
     }
 }
 

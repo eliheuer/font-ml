@@ -19,6 +19,10 @@ clap = { version = "4", features = ["derive"] }
 # accelerate on aarch64. The old nightly-only note no longer applies.
 candle-core = "0.11"
 candle-nn = "0.11"
+# The chat runtime: candle's quantized Qwen3 over a GGUF file, and the
+# HF tokenizer it needs. Both to vet.
+candle-transformers = "0.11"
+tokenizers = "0.22"
 kurbo = "0.13"
 norad = "0.18"
 serde = { version = "1", features = ["derive"] }
@@ -32,6 +36,11 @@ thiserror = "2"
 # Apple's BLAS. A boldening run is dominated by small matmuls, so this
 # is the difference between usable and not on macOS.
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
+# Apple's GPU, for the chat models. Verified to build on stable when
+# added; see the plan's PROGRESS for the measured speeds.
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+# NVIDIA. Wired, not tested here: no CUDA machine on this desk.
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
 [dev-dependencies]
 tempfile = "3"
