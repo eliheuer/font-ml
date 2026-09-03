@@ -179,6 +179,30 @@ designer install or discard it, one undo step per glyph. Runebender
 does, and `runebender-core proposal install` does it from a shell. Any
 other UFO tool sees an ordinary layer it can inspect or delete.
 
+## Training
+
+`run train` trains a bolden model from two masters of one family, in
+candle, on this machine:
+
+```sh
+font-ml run train --source Regular.ufo --target Bold.ufo --out ~/.runebender/models/my-bolden \
+    --steps 2000 --colors any --recenter
+```
+
+The corpus is the training lab's: interleaved pairs for glyphs drawn
+in both masters, weight-labelled singles at interpolated weights,
+contour-start rotation, and one name in ten dropped to `UNK`. Only
+target glyphs marked green train unless `--colors` says otherwise. A
+fixed validation split picks the checkpoint. The directory written
+is a model like any other here: `config.json`, `weights.safetensors`,
+`vocab.txt`, and a `manifest.json` with the run's numbers.
+
+`--init <model>` continues from a model, pinning its vocabulary and
+shape. `--minutes` stops a run on a clock. Progress lines are
+`progress <step>/<steps> loss <value>`.
+
+The lab's OFL pretraining and sketch corpora are not ported.
+
 ## Speed
 
 Build with `--release` and, on macOS, `--features accelerate`. One

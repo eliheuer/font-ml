@@ -29,6 +29,8 @@ pub enum Task {
     Kerning,
     /// Render a glyph as a signed distance field.
     Field,
+    /// Train a bolden model from two masters of one family.
+    Train,
 }
 
 impl Task {
@@ -40,6 +42,7 @@ impl Task {
             Task::Spacing => "spacing",
             Task::Kerning => "kerning",
             Task::Field => "field",
+            Task::Train => "train",
         }
     }
 
@@ -53,6 +56,7 @@ impl Task {
             Task::Spacing,
             Task::Kerning,
             Task::Field,
+            Task::Train,
         ]
     }
 
@@ -69,6 +73,7 @@ impl Task {
             Task::Spacing | Task::Kerning => false,
             // Field models are declared in the format only.
             Task::Field => false,
+            Task::Train => true,
         }
     }
 
@@ -81,6 +86,7 @@ impl Task {
             Task::Spacing => &["source", "glyph"],
             Task::Kerning => &["source", "left", "right"],
             Task::Field => &["glyph"],
+            Task::Train => &["source", "target", "out"],
         }
     }
 }
@@ -186,6 +192,7 @@ impl Task {
             Task::Spacing => "Propose spacing",
             Task::Kerning => "Propose kerning",
             Task::Field => "Distance field",
+            Task::Train => "Train bolden",
         }
     }
 
@@ -201,6 +208,10 @@ impl Task {
             Task::Spacing => "Propose sidebearings for a glyph.",
             Task::Kerning => "Propose kerning values for glyph pairs.",
             Task::Field => "Render a glyph as a signed distance field.",
+            Task::Train => {
+                "Train a bolden model from a lighter and a heavier master of one family, \
+                 in candle, on this machine. Writes a model directory."
+            }
         }
     }
 
@@ -325,6 +336,78 @@ impl Task {
                     "The glyph to render.",
                 )],
                 vec![output("field", Kind::Rows, "The distance grid.")],
+            ),
+            Task::Train => (
+                vec![
+                    input("source", Kind::Source, true, None, "The lighter master."),
+                    input("target", Kind::Source, true, None, "The heavier master."),
+                    input(
+                        "out",
+                        Kind::Text,
+                        true,
+                        None,
+                        "The model directory to write.",
+                    ),
+                    input(
+                        "steps",
+                        Kind::Number,
+                        false,
+                        Some(2000.0),
+                        "Optimizer steps.",
+                    ),
+                    input("dims", Kind::Number, false, Some(384.0), "Model width."),
+                    input(
+                        "layers",
+                        Kind::Number,
+                        false,
+                        Some(6.0),
+                        "Transformer blocks.",
+                    ),
+                    input("heads", Kind::Number, false, Some(8.0), "Attention heads."),
+                    input(
+                        "batch",
+                        Kind::Number,
+                        false,
+                        Some(24.0),
+                        "Sequences per step.",
+                    ),
+                    input(
+                        "minutes",
+                        Kind::Number,
+                        false,
+                        Some(0.0),
+                        "Stop after this long; 0 runs every step.",
+                    ),
+                    input(
+                        "lr",
+                        Kind::Number,
+                        false,
+                        Some(0.0003),
+                        "Peak learning rate.",
+                    ),
+                    input(
+                        "colors",
+                        Kind::Text,
+                        false,
+                        None,
+                        "Mark colours that approve a target glyph: green, blue, or any.",
+                    ),
+                    input(
+                        "recenter",
+                        Kind::Flag,
+                        false,
+                        Some(1.0),
+                        "Centre the deltas on the corpus mean.",
+                    ),
+                    input(
+                        "init",
+                        Kind::Model,
+                        false,
+                        None,
+                        "Continue from this model.",
+                    ),
+                ],
+                vec![output("model", Kind::Model, "The model directory written.")],
             ),
         };
         Spec {

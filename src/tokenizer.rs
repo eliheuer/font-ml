@@ -28,8 +28,8 @@ pub const N_DELTAS: usize = ((DELTA_MAX - DELTA_MIN) / GRID + 1) as usize;
 /// Tokens that are neither names nor numbers. Order is part of the
 /// format: these occupy ids 0..15.
 pub const SPECIALS: &[&str] = &[
-    "PAD", "BOS", "EOS", "SEP", "MOVE", "LINE", "CURVE", "CLOSE", "ADV",
-    "W400", "W500", "W600", "W700", "PAIR", "UNK",
+    "PAD", "BOS", "EOS", "SEP", "MOVE", "LINE", "CURVE", "CLOSE", "ADV", "W400", "W500", "W600",
+    "W700", "PAIR", "UNK",
 ];
 
 /// A drawing command, as the model sees it.
@@ -68,8 +68,7 @@ impl Vocab {
         unicodes.sort_unstable();
         unicodes.dedup();
 
-        let mut tokens: Vec<String> =
-            SPECIALS.iter().map(|s| s.to_string()).collect();
+        let mut tokens: Vec<String> = SPECIALS.iter().map(|s| s.to_string()).collect();
         tokens.extend(glyph_names.iter().map(|n| format!("N_{n}")));
 
         let coord_base = tokens.len();
@@ -107,6 +106,16 @@ impl Vocab {
 
     pub fn len(&self) -> usize {
         self.tokens.len()
+    }
+
+    /// The glyph names, in vocabulary order.
+    pub fn glyph_names(&self) -> &[String] {
+        &self.glyph_names
+    }
+
+    /// The Unicode values, sorted.
+    pub fn unicodes(&self) -> &[u32] {
+        &self.unicodes
     }
 
     pub fn is_empty(&self) -> bool {
@@ -153,8 +162,7 @@ impl Vocab {
 
     /// Id of a delta, snapped and clamped.
     pub fn delta(&self, v: f64) -> usize {
-        let q =
-            ((v / GRID as f64).round() as i32 * GRID).clamp(DELTA_MIN, DELTA_MAX);
+        let q = ((v / GRID as f64).round() as i32 * GRID).clamp(DELTA_MIN, DELTA_MAX);
         self.delta_base + ((q - DELTA_MIN) / GRID) as usize
     }
 
@@ -226,14 +234,17 @@ impl Vocab {
         let mut ops = Vec::new();
         let mut i = 0;
         let coord_at = |i: usize| -> Option<f64> {
-            ids.get(i).and_then(|id| self.coord_value(*id)).map(|v| v as f64)
+            ids.get(i)
+                .and_then(|id| self.coord_value(*id))
+                .map(|v| v as f64)
         };
         while i < ids.len() {
-            let Some(token) = self.token(ids[i]) else { break };
+            let Some(token) = self.token(ids[i]) else {
+                break;
+            };
             match token {
                 "MOVE" | "LINE" => {
-                    let (Some(x), Some(y)) = (coord_at(i + 1), coord_at(i + 2))
-                    else {
+                    let (Some(x), Some(y)) = (coord_at(i + 1), coord_at(i + 2)) else {
                         break;
                     };
                     ops.push(if token == "MOVE" {
@@ -247,8 +258,7 @@ impl Vocab {
                     let mut pts = [(0.0, 0.0); 3];
                     let mut ok = true;
                     for (n, slot) in pts.iter_mut().enumerate() {
-                        match (coord_at(i + 1 + n * 2), coord_at(i + 2 + n * 2))
-                        {
+                        match (coord_at(i + 1 + n * 2), coord_at(i + 2 + n * 2)) {
                             (Some(x), Some(y)) => *slot = (x, y),
                             _ => {
                                 ok = false;
@@ -361,10 +371,7 @@ mod tests {
 
     #[test]
     fn an_unknown_glyph_is_an_error_not_a_guess() {
-        assert!(matches!(
-            vocab().name("thorn"),
-            Err(Error::UnknownGlyph(_))
-        ));
+        assert!(matches!(vocab().name("thorn"), Err(Error::UnknownGlyph(_))));
     }
 
     #[test]

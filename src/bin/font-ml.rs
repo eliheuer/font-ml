@@ -87,9 +87,9 @@ enum Command {
     Run {
         /// Task name, as listed by `tasks`.
         task: String,
-        /// The model directory.
+        /// The model directory. Every task but `train` needs one.
         #[arg(long)]
-        model: PathBuf,
+        model: Option<PathBuf>,
         /// The UFO to read glyphs from.
         #[arg(long)]
         source: Option<PathBuf>,
@@ -115,6 +115,43 @@ enum Command {
         /// No progress lines on stderr.
         #[arg(long)]
         quiet: bool,
+        /// train: the heavier master.
+        #[arg(long)]
+        target: Option<PathBuf>,
+        /// train: the model directory to write.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// train: optimizer steps.
+        #[arg(long, default_value = "2000")]
+        steps: usize,
+        /// train: model width.
+        #[arg(long, default_value = "384")]
+        dims: usize,
+        /// train: transformer blocks.
+        #[arg(long, default_value = "6")]
+        layers: usize,
+        /// train: attention heads.
+        #[arg(long, default_value = "8")]
+        heads: usize,
+        /// train: sequences per step.
+        #[arg(long, default_value = "24")]
+        batch: usize,
+        /// train: stop after this many minutes; 0 runs every step.
+        #[arg(long, default_value = "0")]
+        minutes: f64,
+        /// train: peak learning rate.
+        #[arg(long, default_value = "0.0003")]
+        lr: f64,
+        /// train: mark colours that approve a target glyph: green,
+        /// blue, or any.
+        #[arg(long, default_value = "green", value_delimiter = ',')]
+        colors: Vec<String>,
+        /// train: centre the deltas on the corpus mean.
+        #[arg(long)]
+        recenter: bool,
+        /// train: continue from this model directory.
+        #[arg(long)]
+        init: Option<PathBuf>,
     },
 }
 
@@ -140,6 +177,43 @@ fn main() -> ExitCode {
         ),
         Command::Run {
             task,
+            source,
+            quiet,
+            target,
+            out,
+            steps,
+            dims,
+            layers,
+            heads,
+            batch,
+            minutes,
+            lr,
+            colors,
+            recenter,
+            init,
+            ..
+        } if task == "train" => train_cmd(
+            source.as_deref(),
+            target.as_deref(),
+            out.as_deref(),
+            font_ml::train::TrainConfig {
+                steps,
+                minutes,
+                batch,
+                dims,
+                layers,
+                heads,
+                lr,
+                recenter,
+                colors,
+                ..Default::default()
+            },
+            init.as_deref(),
+            quiet,
+            cli.json,
+        ),
+        Command::Run {
+            task,
             model,
             source,
             glyph,
@@ -148,9 +222,10 @@ fn main() -> ExitCode {
             reference,
             write,
             quiet,
+            ..
         } => run(
             &task,
-            &model,
+            model.as_ref(),
             source.as_deref(),
             RunOptions {
                 glyphs: glyph,
@@ -305,7 +380,7 @@ fn progress(quiet: bool, done: usize, total: usize, glyph: &str) {
 
 fn run(
     task: &str,
-    model: &PathBuf,
+    model: Option<&PathBuf>,
     source: Option<&std::path::Path>,
     options: RunOptions,
     json: bool,
@@ -313,6 +388,9 @@ fn run(
     let task: Task = match task.parse() {
         Ok(t) => t,
         Err(e) => return fail(json, exit::USAGE, &e),
+    };
+    let Some(model) = model else {
+        return fail(json, exit::USAGE, "--model is required");
     };
     let checkpoint = match Checkpoint::open(model) {
         Ok(c) => c,
@@ -331,6 +409,66 @@ fn run(
     match task {
         Task::Bolden => bolden(&checkpoint, source, &options, json),
         _ => fail(json, exit::FAILED, "a ready task with no runner"),
+    }
+}
+
+/// `run train`: two masters in, a model directory out. Progress lines
+/// carry the step and the loss; the JSON report carries the rest.
+#[allow(clippy::too_many_arguments)]
+fn train_cmd(
+    source: Option<&std::path::Path>,
+    target: Option<&std::path::Path>,
+    out: Option<&std::path::Path>,
+    cfg: font_ml::train::TrainConfig,
+    init: Option<&std::path::Path>,
+    quiet: bool,
+    json: bool,
+) -> u8 {
+    let (Some(source), Some(target), Some(out)) = (source, target, out) else {
+        return fail(
+            json,
+            exit::USAGE,
+            "train needs --source (the lighter master), --target (the heavier) and --out",
+        );
+    };
+    let mut on_progress = |step: usize, steps: usize, note: &str| {
+        if !quiet {
+            eprintln!("progress {step}/{steps} {note}");
+        }
+    };
+    match font_ml::train::train(source, target, out, &cfg, init, &mut on_progress) {
+        Ok(report) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": true,
+                        "model": report.out,
+                        "steps": report.steps,
+                        "best_val_loss": report.best_val,
+                        "init_loss": report.init_loss,
+                        "params": report.params,
+                        "seconds": report.seconds,
+                        "vocab": report.vocab,
+                        "pairs": report.pairs,
+                        "train_glyphs": report.train_glyphs,
+                        "val_sequences": report.val_sequences,
+                        "center": report.center,
+                    })
+                );
+            } else {
+                println!(
+                    "{}: {} steps, best val loss {:.4}, {:.1}M params, {:.0}s",
+                    report.out.display(),
+                    report.steps,
+                    report.best_val,
+                    report.params as f64 / 1e6,
+                    report.seconds
+                );
+            }
+            exit::OK
+        }
+        Err(e) => fail(json, exit::FAILED, &e.to_string()),
     }
 }
 

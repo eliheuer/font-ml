@@ -43,6 +43,7 @@ pub mod outline;
 pub mod stems;
 pub mod task;
 pub mod tokenizer;
+pub mod train;
 pub mod ufo;
 
 pub use checkpoint::{Checkpoint, ModelConfig, ModelKind};
