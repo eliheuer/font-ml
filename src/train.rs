@@ -923,6 +923,12 @@ pub fn train(
         Ok(())
     };
 
+    // The starting point is a checkpoint too: an adapter begins as a
+    // no-op and a continued model as itself, and a run that never
+    // improves on that keeps it rather than writing something worse.
+    if init_ckpt.is_some() {
+        checkpoint(&model, "start", &mut best_val)?;
+    }
     for step in 1..=cfg.steps {
         let seqs: Vec<Vec<u32>> = (0..cfg.batch).map(|_| corpus.sample(&mut rng)).collect();
         let batch = pad_batch(&seqs, pad, max_len, &device)?;
