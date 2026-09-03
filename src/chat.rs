@@ -194,9 +194,21 @@ impl ChatModel {
         };
         let mut sampler = LogitsProcessor::from_sampling(options.seed, sampling);
 
-        // The prompt in one pass, then one token at a time.
-        let input = Tensor::new(prompt_tokens.as_slice(), &self.device)?.unsqueeze(0)?;
-        let logits = self.model.forward(&input, 0)?.squeeze(0)?;
+        // The prompt in chunks, then one token at a time. One pass over
+        // a long prompt (a harness with thirty tools writes ten
+        // thousand tokens) asks Metal for an attention buffer it will
+        // not give; a few hundred tokens at a time always fits.
+        const CHUNK: usize = 256;
+        let mut logits = None;
+        let mut offset = 0;
+        for chunk in prompt_tokens.chunks(CHUNK) {
+            let input = Tensor::new(chunk, &self.device)?.unsqueeze(0)?;
+            logits = Some(self.model.forward(&input, offset)?.squeeze(0)?);
+            offset += chunk.len();
+        }
+        let Some(logits) = logits else {
+            return Ok((String::new(), 0));
+        };
         let mut next = sampler.sample(&logits)?;
         let mut generated: Vec<u32> = vec![next];
         let mut text = String::new();

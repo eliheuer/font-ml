@@ -227,6 +227,12 @@ fn completion(
         .unwrap_or_default();
     let messages = messages_from(request, &tools);
     let prompt = ChatModel::render(&messages);
+    eprintln!(
+        "font-ml serve: {} messages, {} tools, {} prompt chars",
+        messages.len(),
+        tools.len(),
+        prompt.len()
+    );
     let streaming = request
         .get("stream")
         .and_then(Value::as_bool)
