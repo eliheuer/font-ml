@@ -219,135 +219,137 @@ impl Task {
 
     /// The full description a caller builds its controls from.
     pub fn spec(self) -> Spec {
-        let (inputs, outputs) = match self {
-            Task::Bolden => (
-                vec![
-                    input("source", Kind::Source, true, None, "The UFO to read from."),
-                    input("model", Kind::Model, true, None, "The model directory."),
-                    input(
-                        "glyph",
-                        Kind::Glyphs,
-                        false,
-                        None,
-                        "Which glyphs. --all for every drawn glyph.",
-                    ),
-                    input(
-                        "strength",
-                        Kind::Number,
-                        false,
-                        Some(1.0),
-                        "Scale the predicted offsets.",
-                    ),
-                    input(
-                        "reference",
-                        Kind::Source,
-                        false,
-                        None,
-                        "The other master; predictions are refitted to the weight it carries.",
-                    ),
-                    input(
-                        "adapter",
-                        Kind::Adapter,
-                        false,
-                        None,
-                        "An adapter directory, with :strength after it. Repeatable; each adds.",
-                    ),
-                    input(
-                        "write",
-                        Kind::Flag,
-                        false,
-                        Some(0.0),
-                        "Write the predictions into the source as a proposal layer.",
-                    ),
-                ],
-                vec![
-                    output(
-                        "com.runebender.proposal.bolden",
+        let (inputs, outputs) =
+            match self {
+                Task::Bolden => (
+                    vec![
+                        input("source", Kind::Source, true, None, "The UFO to read from."),
+                        input("model", Kind::Model, true, None, "The model directory."),
+                        input(
+                            "glyph",
+                            Kind::Glyphs,
+                            false,
+                            None,
+                            "Which glyphs. --all for every drawn glyph.",
+                        ),
+                        input(
+                            "strength",
+                            Kind::Number,
+                            false,
+                            Some(1.0),
+                            "Scale the predicted offsets.",
+                        ),
+                        input(
+                            "reference",
+                            Kind::Source,
+                            false,
+                            None,
+                            "The other master; predictions are refitted to the weight it carries.",
+                        ),
+                        input(
+                            "adapter",
+                            Kind::Adapter,
+                            false,
+                            None,
+                            "An adapter directory, with :strength after it. Repeatable; each adds.",
+                        ),
+                        input(
+                            "write",
+                            Kind::Flag,
+                            false,
+                            Some(0.0),
+                            "Write the predictions into the source as a proposal layer.",
+                        ),
+                    ],
+                    vec![
+                        output(
+                            "com.runebender.proposal.bolden",
+                            Kind::Layer,
+                            "The predicted glyphs, next to the foreground, when --write is given.",
+                        ),
+                        output(
+                            "glyphs",
+                            Kind::Rows,
+                            "Per glyph: points, points moved, advance delta, fitted strength.",
+                        ),
+                    ],
+                ),
+                Task::Complete => (
+                    vec![
+                        input("source", Kind::Source, true, None, "The UFO to read from."),
+                        input("glyph", Kind::Glyph, true, None, "The glyph to continue."),
+                        input(
+                            "prefix",
+                            Kind::Text,
+                            true,
+                            None,
+                            "How much of the glyph is drawn.",
+                        ),
+                    ],
+                    vec![output(
+                        "com.runebender.proposal.complete",
                         Kind::Layer,
-                        "The predicted glyphs, next to the foreground, when --write is given.",
-                    ),
-                    output(
+                        "The completed glyph.",
+                    )],
+                ),
+                Task::Generate => (
+                    vec![input(
+                        "glyph",
+                        Kind::Glyph,
+                        true,
+                        None,
+                        "The glyph to draw.",
+                    )],
+                    vec![output(
+                        "com.runebender.proposal.generate",
+                        Kind::Layer,
+                        "The drawn glyph.",
+                    )],
+                ),
+                Task::Spacing => (
+                    vec![
+                        input("source", Kind::Source, true, None, "The UFO to read from."),
+                        input("glyph", Kind::Glyph, true, None, "The glyph to space."),
+                    ],
+                    vec![output(
                         "glyphs",
                         Kind::Rows,
-                        "Per glyph: points, points moved, advance delta, fitted strength.",
-                    ),
-                ],
-            ),
-            Task::Complete => (
-                vec![
-                    input("source", Kind::Source, true, None, "The UFO to read from."),
-                    input("glyph", Kind::Glyph, true, None, "The glyph to continue."),
-                    input(
-                        "prefix",
-                        Kind::Text,
-                        true,
-                        None,
-                        "How much of the glyph is drawn.",
-                    ),
-                ],
-                vec![output(
-                    "com.runebender.proposal.complete",
-                    Kind::Layer,
-                    "The completed glyph.",
-                )],
-            ),
-            Task::Generate => (
-                vec![input(
-                    "glyph",
-                    Kind::Glyph,
-                    true,
-                    None,
-                    "The glyph to draw.",
-                )],
-                vec![output(
-                    "com.runebender.proposal.generate",
-                    Kind::Layer,
-                    "The drawn glyph.",
-                )],
-            ),
-            Task::Spacing => (
-                vec![
-                    input("source", Kind::Source, true, None, "The UFO to read from."),
-                    input("glyph", Kind::Glyph, true, None, "The glyph to space."),
-                ],
-                vec![output(
-                    "glyphs",
-                    Kind::Rows,
-                    "Proposed sidebearings per glyph.",
-                )],
-            ),
-            Task::Kerning => (
-                vec![
-                    input("source", Kind::Source, true, None, "The UFO to read from."),
-                    input(
-                        "left",
+                        "Proposed sidebearings per glyph.",
+                    )],
+                ),
+                Task::Kerning => (
+                    vec![
+                        input("source", Kind::Source, true, None, "The UFO to read from."),
+                        input(
+                            "left",
+                            Kind::Glyph,
+                            true,
+                            None,
+                            "The left glyph of the pair.",
+                        ),
+                        input(
+                            "right",
+                            Kind::Glyph,
+                            true,
+                            None,
+                            "The right glyph of the pair.",
+                        ),
+                    ],
+                    vec![output("pairs", Kind::Rows, "Proposed kerning per pair.")],
+                ),
+                Task::Field => (
+                    vec![input(
+                        "glyph",
                         Kind::Glyph,
                         true,
                         None,
-                        "The left glyph of the pair.",
-                    ),
-                    input(
-                        "right",
-                        Kind::Glyph,
-                        true,
-                        None,
-                        "The right glyph of the pair.",
-                    ),
-                ],
-                vec![output("pairs", Kind::Rows, "Proposed kerning per pair.")],
-            ),
-            Task::Field => (
-                vec![input(
-                    "glyph",
-                    Kind::Glyph,
-                    true,
-                    None,
-                    "The glyph to render.",
-                )],
-                vec![output("field", Kind::Rows, "The distance grid.")],
-            ),
-            Task::Train => (
-                vec![
+                        "The glyph to render.",
+                    )],
+                    vec![output("field", Kind::Rows, "The distance grid.")],
+                ),
+                Task::Train => {
+                    (
+                        vec![
                     input("source", Kind::Source, true, None, "The lighter master."),
                     input("target", Kind::Source, true, None, "The heavier master."),
                     input(
@@ -415,10 +417,26 @@ impl Task {
                         None,
                         "Continue from this model.",
                     ),
+                    input(
+                        "adapter_out",
+                        Kind::Text,
+                        false,
+                        None,
+                        "Train an adapter over --init into this directory instead of a model.",
+                    ),
+                    input("rank", Kind::Number, false, Some(8.0), "The adapter's rank."),
                 ],
-                vec![output("model", Kind::Model, "The model directory written.")],
-            ),
-        };
+                        vec![
+                            output("model", Kind::Model, "The model directory written."),
+                            output(
+                                "adapter",
+                                Kind::Adapter,
+                                "The adapter directory written, with --adapter_out.",
+                            ),
+                        ],
+                    )
+                }
+            };
         Spec {
             name: self.as_str().into(),
             title: self.title().into(),
