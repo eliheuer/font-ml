@@ -141,10 +141,15 @@ pub struct OutlineModel {
 }
 
 impl OutlineModel {
-    /// Load the weights. Reads about 50MB from disk for a 12M model.
+    /// Load the weights onto the CPU. Reads about 50MB from disk for a
+    /// 12M model.
     pub fn load(checkpoint: &Checkpoint) -> Result<Self> {
+        Self::load_on(checkpoint, Device::Cpu)
+    }
+
+    /// Load the weights onto `device`.
+    pub fn load_on(checkpoint: &Checkpoint, device: Device) -> Result<Self> {
         checkpoint.require(ModelKind::Outline)?;
-        let device = Device::Cpu;
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[checkpoint.weights_path()], DType::F32, &device)?
         };
@@ -152,17 +157,26 @@ impl OutlineModel {
         Self::build(vb, &checkpoint.config, vocab, device, 0.0)
     }
 
-    /// Load the weights with adapters merged in, each at a strength.
-    /// The order is the order given; each adds to what is there.
+    /// Load the weights with adapters merged in, each at a strength,
+    /// onto the CPU. The order is the order given; each adds to what
+    /// is there.
     pub fn load_with_adapters(
         checkpoint: &Checkpoint,
         adapters: &[(Adapter, f64)],
     ) -> Result<Self> {
+        Self::load_with_adapters_on(checkpoint, adapters, Device::Cpu)
+    }
+
+    /// Load the weights with adapters merged in, onto `device`.
+    pub fn load_with_adapters_on(
+        checkpoint: &Checkpoint,
+        adapters: &[(Adapter, f64)],
+        device: Device,
+    ) -> Result<Self> {
         if adapters.is_empty() {
-            return Self::load(checkpoint);
+            return Self::load_on(checkpoint, device);
         }
         checkpoint.require(ModelKind::Outline)?;
-        let device = Device::Cpu;
         let mut weights = candle_core::safetensors::load(checkpoint.weights_path(), &device)?;
         for (adapter, strength) in adapters {
             adapter.merge_into(&mut weights, *strength, &device)?;

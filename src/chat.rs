@@ -71,25 +71,15 @@ pub struct ChatModel {
     stops: Vec<u32>,
 }
 
-/// The device to run on: Metal or CUDA when built with the feature,
-/// else the CPU.
+/// The device to run on. Kept for callers that only know "cpu or
+/// not"; new code passes a [`crate::device::Choice`] to
+/// [`crate::device::pick`].
 pub fn device(cpu: bool) -> Result<Device> {
-    if cpu {
-        return Ok(Device::Cpu);
-    }
-    #[cfg(feature = "metal")]
-    {
-        if let Ok(d) = Device::new_metal(0) {
-            return Ok(d);
-        }
-    }
-    #[cfg(feature = "cuda")]
-    {
-        if let Ok(d) = Device::new_cuda(0) {
-            return Ok(d);
-        }
-    }
-    Ok(Device::Cpu)
+    crate::device::pick(if cpu {
+        crate::device::Choice::Cpu
+    } else {
+        crate::device::Choice::Auto
+    })
 }
 
 /// The GGUF and tokenizer for a model path: a directory holding

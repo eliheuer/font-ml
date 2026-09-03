@@ -91,6 +91,8 @@ pub struct TrainConfig {
     pub rank: usize,
     /// The adapter's alpha; the update is `alpha / rank` times `B·A`.
     pub alpha: f64,
+    /// Where to run: `auto`, `cpu`, `metal`, or `cuda[:n]`.
+    pub device: String,
 }
 
 impl Default for TrainConfig {
@@ -113,6 +115,7 @@ impl Default for TrainConfig {
             adapter_out: None,
             rank: 8,
             alpha: 16.0,
+            device: "auto".into(),
         }
     }
 }
@@ -143,6 +146,8 @@ pub struct Report {
     pub val_sequences: usize,
     /// The delta centre used.
     pub center: [i32; 2],
+    /// The device it ran on: `cpu`, `metal`, or `cuda`.
+    pub device: String,
 }
 
 /// One master as the corpus reads it.
@@ -805,7 +810,13 @@ pub fn train(
         extra: serde_json::Map::new(),
     };
 
-    let device = Device::Cpu;
+    let choice: crate::device::Choice = cfg.device.parse().map_err(|e: String| Error::Io {
+        path: out.to_path_buf(),
+        source: std::io::Error::other(e),
+    })?;
+    let device = crate::device::pick(choice)?;
+    let device_name = crate::device::name(&device);
+    eprintln!("device {device_name}");
     let mut varmap = VarMap::new();
     let adapter = cfg.adapter_out.as_deref();
     let model = match (adapter, &init_ckpt) {
@@ -969,6 +980,7 @@ pub fn train(
         train_glyphs: corpus.train_names.len(),
         val_sequences: val.len(),
         center: [corpus.center.0, corpus.center.1],
+        device: device_name.to_string(),
     };
     let name = out
         .file_name()
@@ -990,6 +1002,7 @@ pub fn train(
             "params": params,
             "pairs": report.pairs,
             "seconds": report.seconds,
+            "device": device_name,
             "notes": "Trained by font-ml train. Validation loss picked the checkpoint.",
         }),
     )?;

@@ -85,6 +85,9 @@ enum Command {
         /// An adapter directory, with `:strength` after it. Repeatable.
         #[arg(long)]
         adapter: Vec<String>,
+        /// Where to run: auto, cpu, metal, or cuda[:n].
+        #[arg(long, default_value = "auto")]
+        device: String,
     },
     /// Talk to a local chat model about the open font. The model can
     /// only read, proof and propose; nothing it does edits the font.
@@ -103,9 +106,10 @@ enum Command {
         /// then PATH.
         #[arg(long)]
         core: Option<PathBuf>,
-        /// Run on the CPU even when a GPU feature is built in.
-        #[arg(long)]
-        cpu: bool,
+        /// Where to run: auto, cpu, metal, or cuda[:n]. Auto takes a
+        /// GPU the build supports when one answers.
+        #[arg(long, default_value = "auto")]
+        device: String,
         /// Tokens per reply at most.
         #[arg(long, default_value = "1024")]
         max_tokens: usize,
@@ -126,9 +130,9 @@ enum Command {
         /// Where to listen.
         #[arg(long, default_value = "127.0.0.1:8790")]
         bind: String,
-        /// Run on the CPU even when a GPU feature is built in.
-        #[arg(long)]
-        cpu: bool,
+        /// Where to run: auto, cpu, metal, or cuda[:n].
+        #[arg(long, default_value = "auto")]
+        device: String,
         /// Tokens per reply at most, unless the request says.
         #[arg(long, default_value = "1024")]
         max_tokens: usize,
@@ -176,6 +180,10 @@ enum Command {
         /// train: the adapter's rank.
         #[arg(long, default_value = "8")]
         rank: usize,
+        /// Where to run: auto, cpu, metal, or cuda[:n]. Auto takes a
+        /// GPU the build supports when one answers.
+        #[arg(long, default_value = "auto")]
+        device: String,
         /// train: the heavier master.
         #[arg(long)]
         target: Option<PathBuf>,
@@ -228,13 +236,13 @@ fn main() -> ExitCode {
         Command::Serve {
             model,
             bind,
-            cpu,
+            device,
             max_tokens,
         } => {
             use font_ml::chat;
-            let device = match chat::device(cpu) {
+            let device = match pick_device(&device) {
                 Ok(d) => d,
-                Err(e) => return ExitCode::from(fail(cli.json, exit::FAILED, &e.to_string())),
+                Err(e) => return ExitCode::from(fail(cli.json, exit::USAGE, &e)),
             };
             let mut chat_model = match chat::ChatModel::load(&model, device) {
                 Ok(m) => m,
@@ -254,7 +262,7 @@ fn main() -> ExitCode {
             font,
             prompt,
             core,
-            cpu,
+            device,
             max_tokens,
             max_calls,
             bench,
@@ -263,7 +271,7 @@ fn main() -> ExitCode {
             font.as_deref(),
             prompt.as_deref(),
             core.as_deref(),
-            cpu,
+            &device,
             max_tokens,
             max_calls,
             bench,
@@ -278,8 +286,10 @@ fn main() -> ExitCode {
             strength,
             fit_stems,
             adapter,
+            device,
         } => eval(
-            &model, &regular, &bold, glyphs, limit, strength, fit_stems, &adapter, cli.json,
+            &model, &regular, &bold, glyphs, limit, strength, fit_stems, &adapter, &device,
+            cli.json,
         ),
         Command::Run {
             task,
@@ -299,6 +309,7 @@ fn main() -> ExitCode {
             init,
             adapter_out,
             rank,
+            device,
             ..
         } if task == "train" => train_cmd(
             source.as_deref(),
@@ -316,6 +327,7 @@ fn main() -> ExitCode {
                 colors,
                 adapter_out,
                 rank,
+                device,
                 ..Default::default()
             },
             init.as_deref(),
@@ -333,6 +345,7 @@ fn main() -> ExitCode {
             write,
             quiet,
             adapter,
+            device,
             ..
         } => run(
             &task,
@@ -346,6 +359,7 @@ fn main() -> ExitCode {
                 write,
                 quiet,
                 adapters: adapter,
+                device,
             },
             cli.json,
         ),
@@ -480,6 +494,13 @@ struct RunOptions {
     write: bool,
     quiet: bool,
     adapters: Vec<String>,
+    device: String,
+}
+
+/// A `--device` value as a device, or the reason it is not one.
+fn pick_device(choice: &str) -> Result<candle_core::Device, String> {
+    let choice: font_ml::device::Choice = choice.parse()?;
+    font_ml::device::pick(choice).map_err(|e| e.to_string())
 }
 
 /// `dir[:strength]` as an adapter to apply.
@@ -550,16 +571,16 @@ fn chat(
     font: Option<&std::path::Path>,
     prompt: Option<&str>,
     core: Option<&std::path::Path>,
-    cpu: bool,
+    device: &str,
     max_tokens: usize,
     max_calls: usize,
     bench: Option<usize>,
     json: bool,
 ) -> u8 {
     use font_ml::chat;
-    let device = match chat::device(cpu) {
+    let device = match pick_device(device) {
         Ok(d) => d,
-        Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+        Err(e) => return fail(json, exit::USAGE, &e),
     };
     let started = std::time::Instant::now();
     let mut chat_model = match chat::ChatModel::load(model, device.clone()) {
@@ -567,13 +588,7 @@ fn chat(
         Err(e) => return fail(json, exit::USAGE, &e.to_string()),
     };
     let load_seconds = started.elapsed().as_secs_f64();
-    let device_name = if device.is_metal() {
-        "metal"
-    } else if device.is_cuda() {
-        "cuda"
-    } else {
-        "cpu"
-    };
+    let device_name = font_ml::device::name(&device);
     if let Some(n) = bench {
         return match chat::bench(&mut chat_model, n) {
             Ok((tokens, seconds)) => {
@@ -700,6 +715,7 @@ fn train_cmd(
                         "train_glyphs": report.train_glyphs,
                         "val_sequences": report.val_sequences,
                         "center": report.center,
+                        "device": report.device,
                     })
                 );
             } else {
@@ -774,7 +790,17 @@ fn bolden(
         Ok(a) => a,
         Err(e) => return fail(json, exit::USAGE, &e),
     };
-    let model = match font_ml::outline::OutlineModel::load_with_adapters(checkpoint, &adapters) {
+    let device = match pick_device(&options.device) {
+        Ok(d) => d,
+        Err(e) => return fail(json, exit::USAGE, &e),
+    };
+    let device_name = font_ml::device::name(&device);
+    if !options.quiet {
+        eprintln!("device {device_name}");
+    }
+    let model = match font_ml::outline::OutlineModel::load_with_adapters_on(
+        checkpoint, &adapters, device,
+    ) {
         Ok(m) => m,
         Err(e) => return fail(json, exit::FAILED, &e.to_string()),
     };
@@ -920,6 +946,7 @@ fn bolden(
             "ok": true,
             "task": "bolden",
             "glyphs": glyphs,
+            "device": device_name,
             "skipped": skipped,
             "proposal": layer.as_ref().map(|l| serde_json::json!({
                 "layer": l, "glyphs": rows.len(), "source": source,
@@ -968,6 +995,7 @@ fn eval(
     strength: f64,
     fit_stems: bool,
     adapter_specs: &[String],
+    device: &str,
     json: bool,
 ) -> u8 {
     let checkpoint = match Checkpoint::open(model_dir) {
@@ -982,10 +1010,17 @@ fn eval(
         Ok(a) => a,
         Err(e) => return fail(json, exit::USAGE, &e),
     };
-    let model = match font_ml::outline::OutlineModel::load_with_adapters(&checkpoint, &adapters) {
-        Ok(m) => m,
-        Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+    let device = match pick_device(device) {
+        Ok(d) => d,
+        Err(e) => return fail(json, exit::USAGE, &e),
     };
+    let device_name = font_ml::device::name(&device);
+    let model =
+        match font_ml::outline::OutlineModel::load_with_adapters_on(&checkpoint, &adapters, device)
+        {
+            Ok(m) => m,
+            Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+        };
     let center = checkpoint
         .config
         .delta_center
@@ -1143,6 +1178,7 @@ fn eval(
                 "glyphs": scores.len(),
                 "model_mae": model_mae,
                 "baseline_mae": baseline_mae,
+                "device": device_name,
                 "beats_baseline": won,
                 "stems_measured": stems.len(),
                 "stem_mae": stem_mae,

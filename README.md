@@ -210,11 +210,38 @@ adapter directory holds `adapter.json` and `adapter.safetensors`.
 
 The lab's OFL pretraining and sketch corpora are not ported.
 
+GPU. Every command that runs a model takes `--device auto|cpu|metal|cuda[:n]`.
+Auto uses the GPU the binary was built for when one answers, else the
+CPU. On a Mac, install with the `metal` feature and training, bolden,
+eval and chat run on the GPU:
+
+```sh
+cargo install --path . --features metal
+```
+
+On a Linux PC with an NVIDIA card and the CUDA toolkit on PATH
+(`nvcc --version` must work), install with `cuda` and pin the device:
+
+```sh
+cargo install --path . --features cuda
+font-ml run train --source Regular.ufo --target Bold.ufo --out my-bolden --device cuda --steps 2000 --colors any --recenter
+font-ml run bolden --model my-bolden --source Regular.ufo --glyph H --device cuda
+```
+
+The CUDA path is wired and not yet tested on a card. A result from a
+GPU is the same as from the CPU: the deltas for H, O and n match to
+the unit between Metal and CPU with the canonical model.
+
 ## Speed
 
-Build with `--release` and, on macOS, `--features accelerate`. One
-glyph goes from 25 seconds to 0.7 with both, which is the difference
-between a batch job and something an editor can offer while you draw.
+Build with `--release` and, on macOS, `--features metal`, which puts
+every model on the GPU; `--features accelerate` speeds up the CPU
+path instead. One glyph goes from 25 seconds to 0.7 with a release
+build and accelerate, which is the difference between a batch job
+and something an editor can offer while you draw. The `accelerate`
+and `metal` features build together, but `chat` on the CPU fails
+under accelerate (no f16 matmul), so a Mac install takes `metal`
+alone.
 
 ## Rust version
 
