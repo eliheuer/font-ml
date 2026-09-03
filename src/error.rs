@@ -23,13 +23,13 @@ pub enum Error {
         source: serde_json::Error,
     },
 
-    #[error(
-        "model is a {found} model; this operation needs a {wanted} model"
-    )]
+    #[error("model is a {found} model; this operation needs a {wanted} model")]
     WrongKind { found: String, wanted: String },
 
-    #[error("the checkpoint and the vocabulary disagree: \
-             config says vocab_size {config}, vocab.txt yields {vocab}")]
+    #[error(
+        "the checkpoint and the vocabulary disagree: \
+             config says vocab_size {config}, vocab.txt yields {vocab}"
+    )]
     VocabMismatch { config: usize, vocab: usize },
 
     #[error("glyph {0} is not in this model's vocabulary")]

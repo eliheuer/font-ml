@@ -35,7 +35,10 @@ fn a_real_checkpoint_loads_and_runs() {
 
     // A forward pass over a header-shaped prefix.
     let v = model.vocab();
-    let name = ckpt.glyph_names.iter().find(|n| *n == "A")
+    let name = ckpt
+        .glyph_names
+        .iter()
+        .find(|n| *n == "A")
         .cloned()
         .unwrap_or_else(|| ckpt.glyph_names[0].clone());
     let ids: Vec<u32> = vec![
@@ -49,7 +52,10 @@ fn a_real_checkpoint_loads_and_runs() {
     // Finite logits: NaN here means the weights loaded into the wrong
     // shapes and every downstream number is meaningless.
     let flat: Vec<f32> = logits.flatten_all().unwrap().to_vec1().unwrap();
-    assert!(flat.iter().all(|x| x.is_finite()), "logits contain NaN or inf");
+    assert!(
+        flat.iter().all(|x| x.is_finite()),
+        "logits contain NaN or inf"
+    );
 
     let next = model.next_token(&ids).expect("greedy step");
     eprintln!(
@@ -104,7 +110,11 @@ fn boldening_a_real_glyph_keeps_it_compatible() {
         "one offset per point, trimmed points restored"
     );
 
-    let moved = result.deltas.iter().filter(|(x, y)| *x != 0 || *y != 0).count();
+    let moved = result
+        .deltas
+        .iter()
+        .filter(|(x, y)| *x != 0 || *y != 0)
+        .count();
     eprintln!(
         "H: {} points, {} moved, advance {:+}",
         result.deltas.len(),
@@ -144,16 +154,19 @@ fn ops_have_exactly_one_point_per_contour_point() {
     let font = norad::Font::load(&ufo).expect("load ufo");
     let mut checked = 0;
     for name in ["H", "O", "period", "eight", "a", "n"] {
-        let Ok(n) = norad::Name::new(name) else { continue };
-        let Some(glyph) = font.default_layer().get_glyph(&n) else { continue };
-        let Some(ops) = font_ml::ufo::glyph_ops(glyph) else { continue };
-        let in_contours: usize =
-            glyph.contours.iter().map(|c| c.points.len()).sum();
+        let Ok(n) = norad::Name::new(name) else {
+            continue;
+        };
+        let Some(glyph) = font.default_layer().get_glyph(&n) else {
+            continue;
+        };
+        let Some(ops) = font_ml::ufo::glyph_ops(glyph) else {
+            continue;
+        };
+        let in_contours: usize = glyph.contours.iter().map(|c| c.points.len()).sum();
         let in_ops = count_points(&ops);
         let closed = glyph.contours.len();
-        eprintln!(
-            "{name}: ops {in_ops}, contours {in_contours} in {closed} contour(s)"
-        );
+        eprintln!("{name}: ops {in_ops}, contours {in_contours} in {closed} contour(s)");
         assert_eq!(
             in_ops,
             in_contours + closed,

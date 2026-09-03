@@ -90,11 +90,14 @@ impl Checkpoint {
         if !config_path.is_file() {
             return Err(Error::MissingFile(dir, "config.json"));
         }
-        let text = std::fs::read_to_string(&config_path).map_err(|source| {
-            Error::Io { path: config_path.clone(), source }
+        let text = std::fs::read_to_string(&config_path).map_err(|source| Error::Io {
+            path: config_path.clone(),
+            source,
         })?;
-        let config: ModelConfig = serde_json::from_str(&text)
-            .map_err(|source| Error::Config { path: config_path, source })?;
+        let config: ModelConfig = serde_json::from_str(&text).map_err(|source| Error::Config {
+            path: config_path,
+            source,
+        })?;
 
         if !dir.join("weights.safetensors").is_file() {
             return Err(Error::MissingFile(dir, "weights.safetensors"));
@@ -105,15 +108,21 @@ impl Checkpoint {
             if !vocab_path.is_file() {
                 return Err(Error::MissingFile(dir, "vocab.txt"));
             }
-            let raw = std::fs::read_to_string(&vocab_path).map_err(|source| {
-                Error::Io { path: vocab_path, source }
+            let raw = std::fs::read_to_string(&vocab_path).map_err(|source| Error::Io {
+                path: vocab_path,
+                source,
             })?;
             parse_vocab(&raw)
         } else {
             (Vec::new(), Vec::new())
         };
 
-        Ok(Self { dir, config, glyph_names, unicodes })
+        Ok(Self {
+            dir,
+            config,
+            glyph_names,
+            unicodes,
+        })
     }
 
     pub fn weights_path(&self) -> PathBuf {
@@ -183,29 +192,24 @@ mod tests {
     #[test]
     fn a_config_without_a_kind_is_an_outline_model() {
         // Every checkpoint written before this crate existed.
-        let cfg: ModelConfig = serde_json::from_str(
-            r#"{"dims":384,"layers":6,"heads":8,"vocab_size":1797}"#,
-        )
-        .unwrap();
+        let cfg: ModelConfig =
+            serde_json::from_str(r#"{"dims":384,"layers":6,"heads":8,"vocab_size":1797}"#).unwrap();
         assert_eq!(cfg.kind, ModelKind::Outline);
         assert_eq!(cfg.max_len, 1024);
     }
 
     #[test]
     fn a_field_config_is_read_as_one() {
-        let cfg: ModelConfig = serde_json::from_str(
-            r#"{"kind":"field","dims":256,"layers":5,"heads":4}"#,
-        )
-        .unwrap();
+        let cfg: ModelConfig =
+            serde_json::from_str(r#"{"kind":"field","dims":256,"layers":5,"heads":4}"#).unwrap();
         assert_eq!(cfg.kind, ModelKind::Field);
     }
 
     #[test]
     fn unknown_config_keys_are_kept_rather_than_rejected() {
-        let cfg: ModelConfig = serde_json::from_str(
-            r#"{"dims":8,"layers":1,"heads":1,"grid_w":16,"grid_h":14}"#,
-        )
-        .unwrap();
+        let cfg: ModelConfig =
+            serde_json::from_str(r#"{"dims":8,"layers":1,"heads":1,"grid_w":16,"grid_h":14}"#)
+                .unwrap();
         assert!(cfg.extra.contains_key("grid_w"));
     }
 }

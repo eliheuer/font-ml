@@ -46,9 +46,11 @@ impl Bolden {
     /// font can assert it rather than trust this module.
     pub fn is_compatible(&self) -> bool {
         self.from.len() == self.to.len()
-            && self.from.iter().zip(&self.to).all(|(a, b)| {
-                std::mem::discriminant(a) == std::mem::discriminant(b)
-            })
+            && self
+                .from
+                .iter()
+                .zip(&self.to)
+                .all(|(a, b)| std::mem::discriminant(a) == std::mem::discriminant(b))
     }
 }
 
@@ -154,7 +156,12 @@ pub fn bolden(
             .collect()
     };
     let to = apply(&from, &deltas, center);
-    Ok(Bolden { from, to, advance_delta, deltas })
+    Ok(Bolden {
+        from,
+        to,
+        advance_delta,
+        deltas,
+    })
 }
 
 /// Ask the model for one offset and append it to the running sequence.
@@ -162,11 +169,7 @@ pub fn bolden(
 /// The choice is restricted to the delta block: an argmax over the
 /// whole vocabulary could return a coordinate or a command, which
 /// would put an absolute position where an offset belongs.
-fn predict_delta(
-    model: &OutlineModel,
-    tokens: &mut Vec<u32>,
-    v: &Vocab,
-) -> Result<i32> {
+fn predict_delta(model: &OutlineModel, tokens: &mut Vec<u32>, v: &Vocab) -> Result<i32> {
     let logits = model.forward(tokens)?;
     let last = logits.i(logits.dim(0)? - 1)?;
     let id = argmax_delta(&last, v)?;
@@ -194,11 +197,7 @@ fn argmax_delta(logits: &Tensor, v: &Vocab) -> Result<usize> {
 /// The trimmed point is a contour's closing duplicate of its start, so
 /// it takes the same offset the start took. Anything else would open
 /// the contour.
-fn restore_trimmed(
-    ops: &[Op],
-    deltas: &[(i32, i32)],
-    trimmed: &[bool],
-) -> Vec<(i32, i32)> {
+fn restore_trimmed(ops: &[Op], deltas: &[(i32, i32)], trimmed: &[bool]) -> Vec<(i32, i32)> {
     if !trimmed.iter().any(|t| *t) {
         return deltas.to_vec();
     }
@@ -311,7 +310,10 @@ mod tests {
         let scaled: Vec<(i32, i32)> = [(10, -4), (-6, 2)]
             .iter()
             .map(|(x, y)| {
-                ((*x as f64 * 2.0).round() as i32, (*y as f64 * 2.0).round() as i32)
+                (
+                    (*x as f64 * 2.0).round() as i32,
+                    (*y as f64 * 2.0).round() as i32,
+                )
             })
             .collect();
         assert_eq!(scaled, vec![(20, -8), (-12, 4)]);
