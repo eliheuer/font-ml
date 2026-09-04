@@ -363,6 +363,60 @@ pub struct TurnReport {
     pub messages: Vec<Message>,
 }
 
+/// Whether the person's question is about a glyph's geometry. The
+/// same word list as core's `agent::asks_geometry`; kept here because
+/// this crate does not link core, only runs it.
+pub fn asks_geometry(question: &str) -> bool {
+    let q = question.to_lowercase();
+    [
+        "wide",
+        "width",
+        "advance",
+        "sidebearing",
+        "side bearing",
+        "lsb",
+        "rsb",
+        "spacing",
+        "points",
+        "contour",
+        "anchor",
+        "shape",
+        "outline",
+        "bounds",
+        "how tall",
+        "height of",
+    ]
+    .iter()
+    .any(|w| q.contains(w))
+}
+
+/// Whether the question is about a format or a term, so documentation
+/// is fetched before the model answers. Mirrors core's `asks_docs`.
+pub fn asks_docs(question: &str) -> bool {
+    let q = question.to_lowercase();
+    [
+        "spec",
+        "ufo",
+        "glif",
+        "designspace",
+        "fontc",
+        "opentype",
+        "attribute",
+        "what does",
+        "what is a",
+        "what is the",
+        "mean",
+        "documentation",
+    ]
+    .iter()
+    .any(|w| q.contains(w))
+}
+
+/// Sent once when the model answered a geometry question without
+/// reading the glyph.
+const READ_FIRST_NUDGE: &str = "You answered without reading the glyph. Call read_glyph on it \
+                                now and answer only from the result.";
+
 /// One assistant turn with its tool loop. `messages` holds the
 /// conversation so far without a system message; the harness prompt
 /// goes first. `emit` hears every event as JSON.
@@ -383,9 +437,31 @@ pub fn turn(
         content: prompt.to_string(),
     });
     convo.extend(messages.iter().cloned());
+    let question = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
     let mut tokens = 0;
     let mut calls = Vec::new();
     let mut final_text = String::new();
+    // A question about a spec or a term gets the documentation before
+    // the model speaks, as a tool result it did not have to ask for.
+    if asks_docs(&question) {
+        let args = json!({ "query": question });
+        emit(json!({ "event": "tool_call", "name": "docs", "arguments": args }));
+        let result = call_tool(core, font, "docs", &args);
+        emit(
+            json!({ "event": "tool_result", "name": "docs", "ok": result.get("ok"), "result": result.get("result") }),
+        );
+        calls.push(result.clone());
+        convo.push(Message {
+            role: "tool".into(),
+            content: shorten(&result, 6000),
+        });
+    }
+    let mut nudged = false;
     for _ in 0..=options.max_calls {
         let rendered = ChatModel::render(&convo);
         let mut on_token = |t: &str| emit(json!({ "event": "token", "text": t }));
@@ -396,7 +472,28 @@ pub fn turn(
             role: "assistant".into(),
             content: reply.clone(),
         });
-        if tool_calls.is_empty() || calls.len() >= options.max_calls {
+        if tool_calls.is_empty() {
+            // The guard: a geometry answer with no read behind it is
+            // sent back once, with the rule restated.
+            let read = calls.iter().any(|c| {
+                matches!(
+                    c.get("name").and_then(Value::as_str),
+                    Some("read_glyph") | Some("proof")
+                )
+            });
+            if asks_geometry(&question) && !read && !nudged {
+                nudged = true;
+                emit(json!({ "event": "nudge", "text": READ_FIRST_NUDGE }));
+                convo.push(Message {
+                    role: "user".into(),
+                    content: READ_FIRST_NUDGE.to_string(),
+                });
+                continue;
+            }
+            final_text = strip(&reply);
+            break;
+        }
+        if calls.len() >= options.max_calls {
             final_text = strip(&reply);
             break;
         }
@@ -490,6 +587,22 @@ mod tests {
             content: "{\"ok\":true}".into(),
         }]);
         assert!(r.contains("<tool_response>\n{\"ok\":true}\n</tool_response>"));
+    }
+
+    #[test]
+    fn questions_are_sorted_by_what_they_need() {
+        assert!(asks_geometry(
+            "How wide is the H, and what are its sidebearings?"
+        ));
+        assert!(!asks_geometry(
+            "What font is open and how many glyphs does it have?"
+        ));
+        assert!(asks_docs(
+            "What does the UFO spec say about the smooth attribute on a point?"
+        ));
+        assert!(!asks_docs(
+            "Propose a bolder H with the virtua-12m-bolden model"
+        ));
     }
 
     #[test]

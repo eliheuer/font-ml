@@ -120,6 +120,15 @@ enum Command {
         /// speed instead of talking.
         #[arg(long)]
         bench: Option<usize>,
+        /// A text file of questions, one per line, each run as a turn
+        /// in one conversation. For rehearsing a demo and for
+        /// measuring the harness the same way every time.
+        #[arg(long)]
+        script: Option<PathBuf>,
+        /// Sampling seed. The same seed gives the same reply, so a
+        /// measurement varies it.
+        #[arg(long)]
+        seed: Option<u64>,
     },
     /// Serve the chat model as an OpenAI-compatible endpoint on the
     /// loopback interface, for a harness outside the editor.
@@ -266,6 +275,8 @@ fn main() -> ExitCode {
             max_tokens,
             max_calls,
             bench,
+            script,
+            seed,
         } => chat(
             &model,
             font.as_deref(),
@@ -275,6 +286,8 @@ fn main() -> ExitCode {
             max_tokens,
             max_calls,
             bench,
+            script.as_deref(),
+            seed,
             cli.json,
         ),
         Command::Eval {
@@ -575,6 +588,8 @@ fn chat(
     max_tokens: usize,
     max_calls: usize,
     bench: Option<usize>,
+    script: Option<&std::path::Path>,
+    seed: Option<u64>,
     json: bool,
 ) -> u8 {
     use font_ml::chat;
@@ -619,6 +634,63 @@ fn chat(
         Ok(h) => h,
         Err(e) => return fail(json, exit::FAILED, &e.to_string()),
     };
+    let defaults = chat::Options::default();
+    let options = chat::Options {
+        max_tokens,
+        max_calls,
+        seed: seed.unwrap_or(defaults.seed),
+        ..defaults
+    };
+    let mut emit = |event: serde_json::Value| {
+        println!("{event}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    };
+    emit(serde_json::json!({ "event": "loaded", "device": device_name, "seconds": load_seconds }));
+    // A script: one conversation, one turn per non-empty line, the
+    // messages carried forward. Each turn's report is one JSON line
+    // with the turn index, so a measurement can score them apart.
+    if let Some(path) = script {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => return fail(json, exit::USAGE, &format!("{}: {e}", path.display())),
+        };
+        let mut history: Vec<chat::Message> = Vec::new();
+        for (index, line) in text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .enumerate()
+        {
+            emit(serde_json::json!({ "event": "turn", "index": index, "prompt": line }));
+            history.push(chat::Message {
+                role: "user".into(),
+                content: line.to_string(),
+            });
+            match chat::turn(
+                &mut chat_model,
+                &core,
+                font,
+                &system,
+                &history,
+                &options,
+                &mut emit,
+            ) {
+                Ok(report) => {
+                    history = report.messages;
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "turn_done", "index": index, "prompt": line,
+                            "text": report.text, "calls": report.calls.iter().map(|c| c.get("name").cloned().unwrap_or_default()).collect::<Vec<_>>(),
+                            "tokens": report.tokens, "seconds": report.seconds,
+                        })
+                    );
+                }
+                Err(e) => return fail(json, exit::FAILED, &e.to_string()),
+            }
+        }
+        return exit::OK;
+    }
     let messages: Vec<chat::Message> = match prompt {
         Some(p) => vec![chat::Message {
             role: "user".into(),
@@ -639,16 +711,6 @@ fn chat(
             }
         }
     };
-    let options = chat::Options {
-        max_tokens,
-        max_calls,
-        ..Default::default()
-    };
-    let mut emit = |event: serde_json::Value| {
-        println!("{event}");
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-    };
-    emit(serde_json::json!({ "event": "loaded", "device": device_name, "seconds": load_seconds }));
     match chat::turn(
         &mut chat_model,
         &core,
@@ -986,6 +1048,7 @@ fn bolden(
     exit::OK
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval(
     model_dir: &PathBuf,
     regular: &PathBuf,
@@ -1061,8 +1124,8 @@ fn eval(
         let pairs: Vec<_> = ["n", "o", "H", "O", "i", "l", "h", "m", "u", "I", "E"]
             .iter()
             .filter_map(|n| {
-                let light = reg_font.default_layer().get_glyph(*n)?;
-                let heavy = bold_font.default_layer().get_glyph(*n)?;
+                let light = reg_font.default_layer().get_glyph(n)?;
+                let heavy = bold_font.default_layer().get_glyph(n)?;
                 Some((
                     font_ml::stems::ops_to_path(&font_ml::ufo::glyph_ops(light)?),
                     font_ml::stems::ops_to_path(&font_ml::ufo::glyph_ops(heavy)?),

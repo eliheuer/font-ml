@@ -64,6 +64,7 @@ impl Bolden {
 /// prediction that is right but too light; scaling corrects that
 /// without changing which way anything moved. 1.0 leaves the
 /// prediction alone.
+#[allow(clippy::too_many_arguments)]
 pub fn bolden(
     model: &OutlineModel,
     glyph: &str,
