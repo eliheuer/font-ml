@@ -73,7 +73,14 @@ impl Block {
     fn forward_batch(&self, x: &Tensor, mask: &Tensor, train: bool) -> Result<Tensor> {
         let (b, seq, dims) = x.dims3()?;
         let head_dim = dims / self.heads;
-        let h = self.norm1.forward(x)?;
+        let norm = |n: &LayerNorm, t: &Tensor| -> Result<Tensor> {
+            if train {
+                layer_norm_train(n, t)
+            } else {
+                Ok(n.forward(t)?)
+            }
+        };
+        let h = norm(&self.norm1, x)?;
         let split = |t: Tensor| -> Result<Tensor> {
             Ok(t.reshape((b, seq, self.heads, head_dim))?
                 .transpose(1, 2)?
@@ -85,14 +92,18 @@ impl Block {
         let scale = 1.0 / (head_dim as f64).sqrt();
         let scores = (q.matmul(&k.transpose(2, 3)?)? * scale)?;
         let scores = scores.broadcast_add(mask)?;
-        let attn = softmax_last_dim(&scores)?;
+        let attn = if train {
+            softmax_train(&scores)?
+        } else {
+            softmax_last_dim(&scores)?
+        };
         let context = attn
             .matmul(&v)?
             .transpose(1, 2)?
             .reshape((b, seq, dims))?
             .contiguous()?;
         let x = (x + self.drop.forward(&self.proj(3, &context)?, train)?)?;
-        let h = self.norm2.forward(&x)?;
+        let h = norm(&self.norm2, &x)?;
         let h = self.fc2.forward(&self.fc1.forward(&h)?.gelu_erf()?)?;
         Ok((x + self.drop.forward(&h, train)?)?)
     }
@@ -278,7 +289,12 @@ impl OutlineModel {
         for block in &self.blocks {
             h = block.forward_batch(&h, &mask, train)?;
         }
-        Ok(self.head.forward(&self.norm.forward(&h)?)?)
+        let normed = if train {
+            layer_norm_train(&self.norm, &h)?
+        } else {
+            self.norm.forward(&h)?
+        };
+        Ok(self.head.forward(&normed)?)
     }
 
     /// The most likely next token after this sequence.
@@ -291,6 +307,33 @@ impl OutlineModel {
         let last = logits.i(logits.dim(0)? - 1)?;
         Ok(last.argmax(D::Minus1)?.to_scalar::<u32>()?)
     }
+}
+
+/// Layer norm written in plain tensor ops, so it has a backward pass.
+///
+/// candle-nn's `LayerNorm` and `softmax_last_dim` are fused custom ops
+/// with no gradient: a loss taken through them reaches only the
+/// layers after the last one. Training goes through these instead;
+/// inference keeps the fused ops.
+fn layer_norm_train(norm: &LayerNorm, x: &Tensor) -> Result<Tensor> {
+    let mean = x.mean_keepdim(D::Minus1)?;
+    let centred = x.broadcast_sub(&mean)?;
+    let var = centred.sqr()?.mean_keepdim(D::Minus1)?;
+    let normed = centred.broadcast_div(&(var + 1e-5)?.sqrt()?)?;
+    let scaled = normed.broadcast_mul(norm.weight())?;
+    Ok(match norm.bias() {
+        Some(b) => scaled.broadcast_add(b)?,
+        None => scaled,
+    })
+}
+
+/// Softmax over the last dimension in plain tensor ops; see
+/// [`layer_norm_train`].
+fn softmax_train(x: &Tensor) -> Result<Tensor> {
+    let max = x.max_keepdim(D::Minus1)?;
+    let e = x.broadcast_sub(&max)?.exp()?;
+    let sum = e.sum_keepdim(D::Minus1)?;
+    Ok(e.broadcast_div(&sum)?)
 }
 
 /// Additive mask that stops a position attending to later ones.

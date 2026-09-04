@@ -191,3 +191,105 @@ mod tests {
         assert_eq!(cfg.scale(), 2.0);
     }
 }
+
+#[cfg(test)]
+mod train_probe {
+    use super::*;
+    use candle_core::DType;
+    use candle_nn::{Optimizer, VarBuilder, VarMap};
+
+    /// Every variable, base and adapter, must get a gradient, and one
+    /// step must move the adapter's B. This is the check that caught
+    /// candle-nn's fused norm and softmax cutting the graph.
+    #[test]
+    fn a_step_moves_b() {
+        let dev = Device::Cpu;
+        let cfg = crate::checkpoint::ModelConfig {
+            kind: crate::checkpoint::ModelKind::Outline,
+            dims: 16,
+            layers: 1,
+            heads: 2,
+            vocab_size: 0,
+            max_len: 32,
+            delta_center: None,
+            trim_close: false,
+            extra: Default::default(),
+        };
+        let vocab = crate::tokenizer::Vocab::new(vec!["a".into()], vec![]);
+        let base = VarMap::new();
+        let base_vb = VarBuilder::from_varmap(&base, DType::F32, &dev);
+        let mut model =
+            crate::outline::OutlineModel::build(base_vb, &cfg, vocab, dev.clone(), 0.0).unwrap();
+        let lora_map = VarMap::new();
+        let lora_vb = VarBuilder::from_varmap(&lora_map, DType::F32, &dev);
+        model.attach_lora(&lora_vb, 4, 8.0, 16).unwrap();
+        let vars = lora_map.all_vars();
+        assert_eq!(vars.len(), 8);
+        let before: Vec<f32> = vars
+            .iter()
+            .map(|v| {
+                v.as_tensor()
+                    .abs()
+                    .unwrap()
+                    .sum_all()
+                    .unwrap()
+                    .to_scalar::<f32>()
+                    .unwrap()
+            })
+            .collect();
+        let ids = Tensor::new(&[[1u32, 5, 6, 7, 2, 0]], &dev).unwrap();
+        let logits = model.forward_batch(&ids, true).unwrap();
+        let loss = logits.sum_all().unwrap();
+        let grads = loss.backward().unwrap();
+        let with_grad = vars.iter().filter(|v| grads.get(v).is_some()).count();
+        let base_vars = base.all_vars();
+        let base_with_grad = base_vars.iter().filter(|v| grads.get(v).is_some()).count();
+        let mut opt = candle_nn::AdamW::new(
+            lora_map.all_vars(),
+            candle_nn::ParamsAdamW {
+                lr: 0.1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        opt.backward_step(&loss).unwrap();
+        let after: Vec<f32> = vars
+            .iter()
+            .map(|v| {
+                v.as_tensor()
+                    .abs()
+                    .unwrap()
+                    .sum_all()
+                    .unwrap()
+                    .to_scalar::<f32>()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(with_grad, 8, "every adapter matrix gets a gradient");
+        assert_eq!(
+            base_with_grad,
+            base_vars.len(),
+            "every base variable gets a gradient"
+        );
+        let moved = before
+            .iter()
+            .zip(&after)
+            .filter(|(b, a)| (*b - *a).abs() > 1e-6)
+            .count();
+        assert!(
+            moved > 0,
+            "no adapter variable moved: before {before:?} after {after:?}"
+        );
+        // And the forward must differ now.
+        let logits2 = model.forward_batch(&ids, false).unwrap();
+        let diff: f32 = (logits2 - logits)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .sum_all()
+            .unwrap()
+            .to_scalar()
+            .unwrap();
+        assert!(diff > 1e-6, "forward unchanged after a step");
+    }
+}
